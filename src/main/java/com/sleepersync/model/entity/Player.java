@@ -66,6 +66,44 @@ public class Player {
     @Column(name = "birth_date")
     private String birthDate;
 
+    // -------------------------------------------------------------------------
+    // Season stats (populated by POST /api/players/sync-stats)
+    // Source: Sleeper /stats/nba/regular/{season}
+    // -------------------------------------------------------------------------
+
+    /** Games played in the synced season */
+    @Column(name = "games_played")
+    private Integer gamesPlayed;
+
+    /** Per-game averages */
+    @Column(name = "avg_pts")
+    private Double avgPts;
+
+    @Column(name = "avg_reb")
+    private Double avgReb;
+
+    @Column(name = "avg_ast")
+    private Double avgAst;
+
+    @Column(name = "avg_stl")
+    private Double avgStl;
+
+    @Column(name = "avg_blk")
+    private Double avgBlk;
+
+    @Column(name = "avg_to")
+    private Double avgTo;
+
+    @Column(name = "avg_fg3m")
+    private Double avgFg3m;
+
+    /**
+     * Composite fantasy points per game using standard points league scoring:
+     *   pts*1 + reb*1.2 + ast*1.5 + stl*3 + blk*3 - to*1 + fg3m*0.5
+     */
+    @Column(name = "fantasy_pts_avg")
+    private Double fantasyPtsAvg;
+
     /** Timestamp of when this record was last synced from Sleeper */
     @Column(name = "last_synced")
     private LocalDateTime lastSynced;

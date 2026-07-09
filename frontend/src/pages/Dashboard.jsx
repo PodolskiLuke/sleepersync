@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { leaguesApi } from '../api/axiosClient'
 
@@ -17,9 +18,10 @@ const FEATURES = [
   },
   {
     title: 'Draft Helper',
-    description: 'Tier-based rankings and ADP data for dynasty rookie and redraft drafts.',
+    description: 'Connect to a live draft to track your picks and see the best available players by position.',
     icon: '📋',
-    available: false,
+    available: true,
+    path: '/draft-helper',
   },
   {
     title: 'Player Rankings',
@@ -76,16 +78,16 @@ export default function Dashboard() {
               </p>
               <h2 className="text-xl font-bold">{league.name}</h2>
               <div className="flex gap-3 mt-1.5 text-sm text-sleeper-muted">
-                <span>{league.totalRosters} teams</span>
+                <span>{league.total_rosters ?? league.totalRosters} teams</span>
                 <span>·</span>
-                <span>{league.season} {league.seasonType}</span>
+                <span>{league.season} {league.season_type ?? league.seasonType}</span>
                 <span>·</span>
                 <span
                   className={`font-medium ${
                     league.status === 'in_season' ? 'text-sleeper-green' : ''
                   }`}
                 >
-                  {league.status?.replace('_', ' ')}
+                  {league.status?.replace(/_/g, ' ')}
                 </span>
               </div>
             </div>
@@ -101,25 +103,29 @@ export default function Dashboard() {
       <div>
         <h2 className="text-lg font-semibold mb-4">Tools</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {FEATURES.map((feature) => (
-            <div
-              key={feature.title}
-              className={`card relative ${
-                feature.available
-                  ? 'hover:border-sleeper-accent cursor-pointer transition-colors'
-                  : 'opacity-60'
-              }`}
-            >
-              {!feature.available && (
-                <span className="absolute top-4 right-4 text-xs bg-sleeper-border text-sleeper-muted px-2 py-0.5 rounded-full">
-                  Coming soon
-                </span>
-              )}
-              <div className="text-2xl mb-2">{feature.icon}</div>
-              <h3 className="font-semibold mb-1">{feature.title}</h3>
-              <p className="text-sm text-sleeper-muted">{feature.description}</p>
-            </div>
-          ))}
+          {FEATURES.map((feature) => {
+            const CardTag = feature.available ? Link : 'div'
+            return (
+              <CardTag
+                key={feature.title}
+                {...(feature.available ? { to: feature.path } : {})}
+                className={`card relative block ${
+                  feature.available
+                    ? 'hover:border-sleeper-accent cursor-pointer transition-colors'
+                    : 'opacity-60'
+                }`}
+              >
+                {!feature.available && (
+                  <span className="absolute top-4 right-4 text-xs bg-sleeper-border text-sleeper-muted px-2 py-0.5 rounded-full">
+                    Coming soon
+                  </span>
+                )}
+                <div className="text-2xl mb-2">{feature.icon}</div>
+                <h3 className="font-semibold mb-1">{feature.title}</h3>
+                <p className="text-sm text-sleeper-muted">{feature.description}</p>
+              </CardTag>
+            )
+          })}
         </div>
       </div>
     </div>

@@ -80,45 +80,48 @@ export default function SelectLeague() {
 
         {!fetching && leagues.length > 0 && (
           <div className="space-y-3">
-            {leagues.map((league) => (
-              <button
-                key={league.leagueId}
-                onClick={() => handleSelect(league.leagueId)}
-                disabled={!!selecting}
-                className="w-full card text-left hover:border-sleeper-accent transition-colors
-                           disabled:opacity-60 disabled:cursor-not-allowed group"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold group-hover:text-sleeper-accent transition-colors">
-                      {league.name}
-                    </p>
-                    <div className="flex gap-3 mt-1 text-xs text-sleeper-muted">
-                      <span>{league.totalRosters} teams</span>
-                      <span>·</span>
-                      <span>{league.season} {league.seasonType}</span>
-                      <span>·</span>
-                      <span
-                        className={`font-medium ${
-                          league.status === 'in_season'
-                            ? 'text-sleeper-green'
-                            : 'text-sleeper-muted'
-                        }`}
-                      >
-                        {league.status?.replace('_', ' ')}
-                      </span>
+            {leagues.map((league) => {
+              const id = league.league_id || league.leagueId
+              return (
+                <button
+                  key={id}
+                  onClick={() => handleSelect(id)}
+                  disabled={!!selecting}
+                  className="w-full card text-left hover:border-sleeper-accent transition-colors
+                             disabled:opacity-60 disabled:cursor-not-allowed group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-semibold group-hover:text-sleeper-accent transition-colors">
+                        {league.name}
+                      </p>
+                      <div className="flex gap-3 mt-1 text-xs text-sleeper-muted">
+                        <span>{league.total_rosters ?? league.totalRosters} teams</span>
+                        <span>·</span>
+                        <span>{league.season} {league.season_type ?? league.seasonType}</span>
+                        <span>·</span>
+                        <span
+                          className={`font-medium ${
+                            league.status === 'in_season'
+                              ? 'text-sleeper-green'
+                              : 'text-sleeper-muted'
+                          }`}
+                        >
+                          {league.status?.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-sleeper-muted group-hover:text-sleeper-accent transition-colors ml-4">
+                      {selecting === id ? (
+                        <div className="w-5 h-5 border-2 border-sleeper-accent border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        '→'
+                      )}
                     </div>
                   </div>
-                  <div className="text-sleeper-muted group-hover:text-sleeper-accent transition-colors ml-4">
-                    {selecting === league.leagueId ? (
-                      <div className="w-5 h-5 border-2 border-sleeper-accent border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      '→'
-                    )}
-                  </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>

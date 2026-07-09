@@ -61,4 +61,18 @@ export const leaguesApi = {
   getMatchups: (leagueId, week) => api.get(`/leagues/${leagueId}/matchups/${week}`),
 }
 
+// -------------------------------------------------------------------------
+// Draft Helper
+// -------------------------------------------------------------------------
+
+export const draftApi = {
+  resolveUser: (username) => api.get(`/drafts/resolve/${encodeURIComponent(username)}`),
+  getDraft: (draftId) => api.get(`/drafts/${draftId}`),
+  getPicks: (draftId) => api.get(`/drafts/${draftId}/picks`),
+  getMyPicks: (draftId, sleeperUserId) =>
+    api.get(`/drafts/${draftId}/my-picks`, { params: { sleeperUserId } }),
+  getBestAvailable: (draftId, limit = 15) =>
+    api.get(`/drafts/${draftId}/best-available`, { params: { limit } }),
+}
+
 export default api

@@ -8,6 +8,7 @@ import Login from './pages/Login'
 import LinkSleeper from './pages/LinkSleeper'
 import SelectLeague from './pages/SelectLeague'
 import Dashboard from './pages/Dashboard'
+import DraftHelper from './pages/DraftHelper'
 
 export default function App() {
   return (
@@ -29,6 +30,9 @@ export default function App() {
 
             {/* Main app */}
             <Route path="/dashboard" element={<Dashboard />} />
+
+            {/* Tools */}
+            <Route path="/draft-helper" element={<DraftHelper />} />
           </Route>
 
           {/* Default redirect */}

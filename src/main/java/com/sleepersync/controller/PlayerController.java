@@ -26,6 +26,17 @@ public class PlayerController {
         return ResponseEntity.ok(Map.of("synced", count, "message", "Player sync complete"));
     }
 
+    /**
+     * Fetch season stats from Sleeper and update each player's per-game averages
+     * and fantasy points average in the local DB.
+     * Call this after /sync to populate ADP/fantasy pts data.
+     */
+    @PostMapping("/sync-stats")
+    public ResponseEntity<Map<String, Object>> syncStats() {
+        int count = playerService.syncPlayerStats();
+        return ResponseEntity.ok(Map.of("updated", count, "message", "Stats sync complete"));
+    }
+
     /** Get all players from local DB */
     @GetMapping
     public ResponseEntity<List<Player>> getAllPlayers() {

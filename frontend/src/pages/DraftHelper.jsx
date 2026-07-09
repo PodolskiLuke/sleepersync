@@ -1,0 +1,476 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { draftApi, playersApi } from '../api/axiosClient'
+
+const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C']
+const STORAGE_KEY = 'draftHelperSession'
+const POLL_INTERVAL_MS = 5000
+
+const getNum = (value, fallback) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+const rankingScore = (player) => {
+  const fpts = getNum(player?.fantasyPtsAvg, 0)
+  const adp = getNum(player?.searchRank, 9999)
+  const adpComponent = adp > 0 ? (1000 - adp) / 1000 : 0
+  return fpts * 0.75 + adpComponent * 0.25
+}
+
+const matchesPosition = (playerPosition, wanted) => {
+  if (!playerPosition) return false
+  const normalized = String(playerPosition).toUpperCase()
+  const tokens = normalized.split(/[^A-Z]+/).filter(Boolean)
+  if (tokens.includes(wanted)) return true
+  if ((wanted === 'PG' || wanted === 'SG') && tokens.includes('G')) return true
+  if ((wanted === 'SF' || wanted === 'PF') && tokens.includes('F')) return true
+  return wanted === 'C' && tokens.includes('C')
+}
+
+const buildFallbackBestAvailable = (allPlayers, picks, limitPerPos = 15) => {
+  const pickedIds = new Set(
+    (picks || [])
+      .map((pick) => pick.player_id ?? pick.playerId)
+      .filter((id) => !!id)
+  )
+
+  const pool = (allPlayers || [])
+    .filter((p) => {
+      const playerId = p.playerId ?? p.player_id
+      return playerId && !pickedIds.has(playerId)
+    })
+    .sort((a, b) => rankingScore(b) - rankingScore(a))
+
+  const byPosition = {}
+  POSITIONS.forEach((pos) => {
+    byPosition[pos] = pool.filter((p) => matchesPosition(p.position, pos)).slice(0, limitPerPos)
+  })
+
+  return {
+    overall: pool.slice(0, Math.max(limitPerPos, 30)),
+    byPosition,
+    totalPicksMade: pickedIds.size,
+  }
+}
+
+export default function DraftHelper() {
+  // Setup form state
+  const [sleeperUsername, setSleeperUsername] = useState('')
+  const [draftId, setDraftId] = useState('')
+  const [setupError, setSetupError] = useState('')
+  const [connecting, setConnecting] = useState(false)
+
+  // Active session + live board state
+  const [session, setSession] = useState(null) // { userId, username, draftId }
+  const [draft, setDraft] = useState(null)
+  const [picks, setPicks] = useState([])
+  const [myPicks, setMyPicks] = useState([])
+  const [bestAvailable, setBestAvailable] = useState(null)
+  const [activeTab, setActiveTab] = useState('ALL')
+  const [boardError, setBoardError] = useState('')
+  const [initialLoading, setInitialLoading] = useState(false)
+
+  const intervalRef = useRef(null)
+
+  // Restore the last used username/draft ID so the form isn't empty on revisit
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved)
+      setSleeperUsername(parsed.username || '')
+      setDraftId(parsed.draftId || '')
+    } catch {
+      // ignore malformed cache
+    }
+  }, [])
+
+  const refreshBoard = useCallback(async (currentDraftId, currentUserId) => {
+    try {
+      const [draftRes, picksRes, myPicksRes, bestRes] = await Promise.all([
+        draftApi.getDraft(currentDraftId),
+        draftApi.getPicks(currentDraftId),
+        draftApi.getMyPicks(currentDraftId, currentUserId),
+        draftApi.getBestAvailable(currentDraftId, 15),
+      ])
+      setDraft(draftRes.data)
+      setPicks(picksRes.data)
+      setMyPicks(myPicksRes.data)
+
+      const bestData = bestRes.data
+      const hasBestData =
+        (bestData?.overall && bestData.overall.length > 0) ||
+        Object.values(bestData?.byPosition || {}).some((arr) => Array.isArray(arr) && arr.length > 0)
+
+      if (hasBestData) {
+        setBestAvailable(bestData)
+      } else {
+        const allPlayersRes = await playersApi.getAll()
+        const fallback = buildFallbackBestAvailable(allPlayersRes.data, picksRes.data, 15)
+        setBestAvailable(fallback)
+      }
+      setBoardError('')
+    } catch (err) {
+      setBoardError(
+        err.response?.data?.message || 'Lost connection to the draft. Retrying...'
+      )
+    }
+  }, [])
+
+  // Poll the draft while a session is active
+  useEffect(() => {
+    if (!session) return undefined
+
+    setInitialLoading(true)
+    refreshBoard(session.draftId, session.userId).finally(() => setInitialLoading(false))
+
+    intervalRef.current = setInterval(() => {
+      refreshBoard(session.draftId, session.userId)
+    }, POLL_INTERVAL_MS)
+
+    return () => clearInterval(intervalRef.current)
+  }, [session, refreshBoard])
+
+  const handleConnect = async (e) => {
+    e.preventDefault()
+    setSetupError('')
+    setConnecting(true)
+    try {
+      const trimmedUsername = sleeperUsername.trim()
+      const trimmedDraftId = draftId.trim()
+
+      const [userRes] = await Promise.all([
+        draftApi.resolveUser(trimmedUsername),
+        draftApi.getDraft(trimmedDraftId), // validates the draft ID up front
+      ])
+
+      const newSession = {
+        userId: userRes.data.userId,
+        username: userRes.data.username,
+        draftId: trimmedDraftId,
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newSession))
+      setActiveTab('ALL')
+      setSession(newSession)
+    } catch (err) {
+      setSetupError(
+        err.response?.data?.message ||
+        'Could not connect. Double-check your Sleeper username and draft ID.'
+      )
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const handleDisconnect = () => {
+    clearInterval(intervalRef.current)
+    setSession(null)
+    setDraft(null)
+    setPicks([])
+    setMyPicks([])
+    setBestAvailable(null)
+    setBoardError('')
+  }
+
+  // ---------------------------------------------------------------------
+  // Setup screen
+  // ---------------------------------------------------------------------
+  if (!session) {
+    return (
+      <div className="min-h-[calc(100vh-3.5rem)] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md">
+          <div className="mb-6 text-center">
+            <h1 className="text-2xl font-bold">Draft Helper</h1>
+            <p className="text-sleeper-muted mt-1 text-sm">
+              Connect to a live Sleeper draft to track your picks and see the
+              best available players at every position.
+            </p>
+          </div>
+
+          <div className="card">
+            <form onSubmit={handleConnect} className="space-y-4">
+              <div>
+                <label htmlFor="sleeperUsername">Sleeper Username</label>
+                <input
+                  id="sleeperUsername"
+                  type="text"
+                  placeholder="e.g. hoopsdynasty"
+                  value={sleeperUsername}
+                  onChange={(e) => setSleeperUsername(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="draftId">League Draft ID</label>
+                <input
+                  id="draftId"
+                  type="text"
+                  placeholder="e.g. 987654321012345678"
+                  value={draftId}
+                  onChange={(e) => setDraftId(e.target.value)}
+                  required
+                />
+                <p className="text-xs text-sleeper-muted mt-1.5">
+                  Find this in your league&apos;s draft URL on Sleeper (the long
+                  number after /draft/).
+                </p>
+              </div>
+
+              {setupError && <p className="error-msg">{setupError}</p>}
+
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={connecting || !sleeperUsername.trim() || !draftId.trim()}
+              >
+                {connecting ? 'Connecting...' : 'Connect to Draft'}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ---------------------------------------------------------------------
+  // Live draft board
+  // ---------------------------------------------------------------------
+  const totalRounds = draft?.settings?.rounds
+  const totalTeams = draft?.settings?.teams
+  const totalPicks = totalRounds && totalTeams ? totalRounds * totalTeams : null
+  const picksMade = bestAvailable?.totalPicksMade ?? picks.length
+  const currentPickNo = Math.min(picksMade + 1, totalPicks ?? picksMade + 1)
+
+  const recentPicks = [...picks]
+    .filter((p) => p.player_id)
+    .sort((a, b) => (b.pick_no ?? 0) - (a.pick_no ?? 0))
+    .slice(0, 8)
+
+  const tabs = ['ALL', ...POSITIONS]
+  const activeList =
+    activeTab === 'ALL' ? bestAvailable?.overall : bestAvailable?.byPosition?.[activeTab]
+  const rankedActiveList = [...(activeList || [])].sort(
+    (a, b) => rankingScore(b) - rankingScore(a)
+  )
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-sleeper-green animate-pulse" />
+            <h1 className="text-2xl font-bold">Draft Helper</h1>
+          </div>
+          <p className="text-sleeper-muted text-sm mt-1">
+            Connected as{' '}
+            <span className="text-sleeper-accent font-medium">@{session.username}</span>
+            {draft?.status && (
+              <>
+                {' '}·{' '}
+                <span
+                  className={draft.status === 'complete' ? 'text-sleeper-red' : 'text-sleeper-green'}
+                >
+                  {draft.status.replace('_', ' ')}
+                </span>
+              </>
+            )}
+            {totalPicks && (
+              <>
+                {' '}· Pick {Math.min(currentPickNo, totalPicks)} of {totalPicks}
+              </>
+            )}
+          </p>
+        </div>
+        <button onClick={handleDisconnect} className="btn-secondary w-auto px-4 text-sm">
+          Change Draft
+        </button>
+      </div>
+
+      {boardError && (
+        <div className="card mb-6 border-sleeper-red/50 text-sleeper-red text-sm">
+          {boardError}
+        </div>
+      )}
+
+      {initialLoading ? (
+        <div className="flex justify-center py-16">
+          <div className="w-8 h-8 border-4 border-sleeper-accent border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {/* Left column: My Team + Recent Picks */}
+          <div className="lg:col-span-1 space-y-6">
+            <div className="card">
+              <h2 className="font-semibold mb-3 flex items-center justify-between">
+                My Team
+                <span className="text-xs text-sleeper-muted font-normal">
+                  {myPicks.length} pick{myPicks.length === 1 ? '' : 's'}
+                </span>
+              </h2>
+              {myPicks.length === 0 ? (
+                <p className="text-sm text-sleeper-muted">
+                  No picks yet. They&apos;ll show up here as soon as it&apos;s your turn.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {myPicks.map((pick) => (
+                    <li
+                      key={pick.pickNo}
+                      className="flex items-center justify-between text-sm border-b border-sleeper-border pb-2 last:border-0 last:pb-0"
+                    >
+                      <div>
+                        <p className="font-medium">{pick.fullName}</p>
+                        <p className="text-xs text-sleeper-muted">
+                          {pick.position || '—'} · {pick.team || 'FA'}
+                        </p>
+                      </div>
+                      <span className="text-xs text-sleeper-muted shrink-0 ml-2">
+                        R{pick.round}.{String(pick.draftSlot).padStart(2, '0')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="card">
+              <h2 className="font-semibold mb-3">Recent Picks</h2>
+              {recentPicks.length === 0 ? (
+                <p className="text-sm text-sleeper-muted">No picks yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {recentPicks.map((pick) => {
+                    const meta = pick.metadata || {}
+                    const name = `${meta.first_name || ''} ${meta.last_name || ''}`.trim() || 'Unknown'
+                    return (
+                      <li key={pick.pick_no} className="text-sm">
+                        <span className="text-sleeper-muted text-xs mr-1.5">
+                          #{pick.pick_no}
+                        </span>
+                        <span className="font-medium">{name}</span>
+                        <span className="text-xs text-sleeper-muted ml-1.5">
+                          {meta.position || ''} {meta.team ? `· ${meta.team}` : ''}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          {/* Main: Best Available */}
+          <div className="lg:col-span-3">
+            <div className="card">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <h2 className="font-semibold">Best Available</h2>
+                <div className="flex gap-1 flex-wrap">
+                  {tabs.map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab)}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-lg transition ${
+                        activeTab === tab
+                          ? 'bg-sleeper-accent text-sleeper-bg'
+                          : 'bg-sleeper-bg border border-sleeper-border text-sleeper-muted hover:text-white'
+                      }`}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {!rankedActiveList || rankedActiveList.length === 0 ? (
+                <p className="text-sm text-sleeper-muted py-6 text-center">
+                  No available players found for this position.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  {/* Column headers */}
+                  <div className="grid grid-cols-[2rem_1fr_5.5rem_5.5rem_auto] gap-x-3 text-xs font-semibold text-sleeper-muted uppercase tracking-wider px-2 pb-2 border-b border-sleeper-border mb-1">
+                    <span>#</span>
+                    <span>Player</span>
+                    <span className="text-center">FPTS/G</span>
+                    <span className="text-center">ADP Rank</span>
+                    <span>Stats/G</span>
+                  </div>
+
+                  <ul className="space-y-0.5">
+                    {rankedActiveList.map((player, i) => {
+                      const hasFpts = player.fantasyPtsAvg != null
+                      const hasStats = player.avgPts != null
+                      return (
+                        <li
+                          key={player.playerId}
+                          className="grid grid-cols-[2rem_1fr_5.5rem_5.5rem_auto] gap-x-3 items-center px-2 py-2 rounded-lg hover:bg-sleeper-border/30 transition"
+                        >
+                          {/* Rank */}
+                          <span className="text-xs text-sleeper-muted font-mono">{i + 1}</span>
+
+                          {/* Name + position + injury */}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-medium text-sm truncate">{player.fullName}</span>
+                              {player.injuryStatus && (
+                                <span className="text-xs text-sleeper-red font-semibold shrink-0">
+                                  {player.injuryStatus}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-sleeper-muted">
+                              {player.position || '—'} · {player.team || 'FA'}
+                              {player.age ? ` · Age ${player.age}` : ''}
+                            </p>
+                          </div>
+
+                          {/* Fantasy pts avg */}
+                          <div className="text-center">
+                            {hasFpts ? (
+                              <span className="font-bold text-sm text-sleeper-accent">
+                                {player.fantasyPtsAvg.toFixed(1)}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-sleeper-muted">—</span>
+                            )}
+                          </div>
+
+                          {/* ADP rank (search_rank from Sleeper = dynasty value rank) */}
+                          <div className="text-center">
+                            {player.searchRank != null ? (
+                              <span className="text-xs text-sleeper-muted font-mono">
+                                #{player.searchRank}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-sleeper-muted">—</span>
+                            )}
+                          </div>
+
+                          {/* Per-game stat line */}
+                          <div className="text-xs text-sleeper-muted whitespace-nowrap">
+                            {hasStats ? (
+                              <span>
+                                {player.avgPts}pts · {player.avgReb}reb · {player.avgAst}ast
+                                {(player.avgStl > 0 || player.avgBlk > 0) && (
+                                  <> · {player.avgStl}stl · {player.avgBlk}blk</>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="text-sleeper-border italic">Run /players/sync-stats</span>
+                            )}
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

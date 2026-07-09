@@ -1,6 +1,8 @@
 package com.sleepersync.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.sleepersync.model.dto.DraftDto;
+import com.sleepersync.model.dto.DraftPickDto;
 import com.sleepersync.model.dto.LeagueDto;
 import com.sleepersync.model.dto.MatchupDto;
 import com.sleepersync.model.dto.RosterDto;
@@ -15,7 +17,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -154,11 +158,11 @@ public class SleeperApiClient {
     }
 
     /**
-     * Fetches all leagues for a user in a given season.
+     * Fetches all leagues for a user in a specific season.
      */
-    public List<LeagueDto> getLeaguesForUser(String userId) {
-        String url = baseUrl + "/user/" + userId + "/leagues/" + sport + "/" + season;
-        log.info("Fetching leagues for user {} season {}", userId, season);
+    public List<LeagueDto> getLeaguesForUser(String userId, String forSeason) {
+        String url = baseUrl + "/user/" + userId + "/leagues/" + sport + "/" + forSeason;
+        log.info("Fetching leagues for user {} season {}", userId, forSeason);
         try {
             ResponseEntity<List<LeagueDto>> response = restTemplate.exchange(
                     url,
@@ -168,9 +172,39 @@ public class SleeperApiClient {
             );
             return response.getBody() != null ? response.getBody() : Collections.emptyList();
         } catch (HttpClientErrorException e) {
-            log.error("Failed to fetch leagues for user {}: {}", userId, e.getMessage());
+            log.error("Failed to fetch leagues for user {} season {}: {}", userId, forSeason, e.getMessage());
             return Collections.emptyList();
         }
+    }
+
+    /**
+     * Fetches all leagues for a user, merged across the configured season AND
+     * the prior season.
+     *
+     * Why: Sleeper scopes leagues to a single season - a dynasty league gets
+     * a brand new league_id each year once the commissioner rolls it over.
+     * Right after a season transition, some of a user's leagues may have
+     * already rolled over to the new season while others haven't yet, so
+     * querying only one season can make leagues silently "disappear" from
+     * results. Merging both (deduped by league_id) avoids that.
+     */
+    public List<LeagueDto> getLeaguesForUser(String userId) {
+        int currentSeason;
+        try {
+            currentSeason = Integer.parseInt(season);
+        } catch (NumberFormatException e) {
+            currentSeason = java.time.Year.now().getValue();
+        }
+
+        Map<String, LeagueDto> merged = new LinkedHashMap<>();
+        for (int s = currentSeason; s >= currentSeason - 1; s--) {
+            for (LeagueDto league : getLeaguesForUser(userId, String.valueOf(s))) {
+                if (league.getLeagueId() != null) {
+                    merged.putIfAbsent(league.getLeagueId(), league);
+                }
+            }
+        }
+        return new ArrayList<>(merged.values());
     }
 
     // -------------------------------------------------------------------------
@@ -178,22 +212,66 @@ public class SleeperApiClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Fetches all picks from a draft.
+     * Fetches draft metadata (status, settings, draft order, slot mapping).
      */
-    public List<JsonNode> getDraftPicks(String draftId) {
+    public DraftDto getDraft(String draftId) {
+        String url = baseUrl + "/draft/" + draftId;
+        log.info("Fetching draft {}", draftId);
+        try {
+            return restTemplate.getForObject(url, DraftDto.class);
+        } catch (HttpClientErrorException e) {
+            log.error("Failed to fetch draft {}: {}", draftId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Fetches all picks made so far in a draft. Safe to poll repeatedly
+     * while a draft is live - Sleeper returns the full, up-to-date pick list.
+     */
+    public List<DraftPickDto> getDraftPicks(String draftId) {
         String url = baseUrl + "/draft/" + draftId + "/picks";
         log.info("Fetching picks for draft {}", draftId);
         try {
-            ResponseEntity<List<JsonNode>> response = restTemplate.exchange(
+            ResponseEntity<List<DraftPickDto>> response = restTemplate.exchange(
                     url,
                     HttpMethod.GET,
                     null,
-                    new ParameterizedTypeReference<List<JsonNode>>() {}
+                    new ParameterizedTypeReference<List<DraftPickDto>>() {}
             );
             return response.getBody() != null ? response.getBody() : Collections.emptyList();
         } catch (HttpClientErrorException e) {
             log.error("Failed to fetch draft picks for draft {}: {}", draftId, e.getMessage());
             return Collections.emptyList();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Stats
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fetches season-total stats for all NBA players from Sleeper.
+     * Returns a map of player_id -> stats node containing raw season totals
+     * (pts, reb, ast, stl, blk, to, fg3m, gp, etc.).
+     *
+     * Endpoint: GET /stats/nba/regular/{season}
+     * Note: stats are SEASON TOTALS, not per-game. Divide by gp for averages.
+     */
+    public Map<String, JsonNode> getSeasonStats(String seasonYear) {
+        String url = baseUrl + "/stats/" + sport + "/regular/" + seasonYear;
+        log.info("Fetching {} season stats for {}", sport.toUpperCase(), seasonYear);
+        try {
+            ResponseEntity<Map<String, JsonNode>> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<Map<String, JsonNode>>() {}
+            );
+            return response.getBody() != null ? response.getBody() : Collections.emptyMap();
+        } catch (HttpClientErrorException e) {
+            log.error("Failed to fetch season stats for {}: {}", seasonYear, e.getMessage());
+            return Collections.emptyMap();
         }
     }
 }
