@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-sleeper-bg text-white min-h-screen;
+  }
+
+  input {
+    @apply bg-sleeper-bg border border-sleeper-border rounded-lg px-4 py-2.5 w-full
+           text-white placeholder-sleeper-muted
+           focus:outline-none focus:ring-2 focus:ring-sleeper-accent focus:border-transparent
+           transition;
+  }
+
+  label {
+    @apply block text-sm font-medium text-sleeper-muted mb-1;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply w-full bg-sleeper-accent text-sleeper-bg font-semibold py-2.5 px-4 rounded-lg
+           hover:bg-blue-400 active:scale-95 transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply w-full border border-sleeper-border text-white font-medium py-2.5 px-4 rounded-lg
+           hover:bg-sleeper-card active:scale-95 transition;
+  }
+
+  .card {
+    @apply bg-sleeper-card border border-sleeper-border rounded-xl p-6;
+  }
+
+  .error-msg {
+    @apply text-sleeper-red text-sm mt-1;
+  }
+
+  .step-badge {
+    @apply inline-flex items-center justify-center w-7 h-7 rounded-full
+           bg-sleeper-accent text-sleeper-bg text-sm font-bold shrink-0;
+  }
+}
