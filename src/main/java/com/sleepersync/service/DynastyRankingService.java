@@ -12,7 +12,6 @@ import org.springframework.stereotype.Service;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -77,6 +76,10 @@ public class DynastyRankingService {
                 .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
                 .collect(Collectors.groupingBy(e -> normalizeName(e.getPlayerName())));
 
+        Map<String, List<DynastyRankingEntry>> externalByLastName = external.stream()
+            .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
+            .collect(Collectors.groupingBy(e -> lastNameOfNormalized(normalizeName(e.getPlayerName()))));
+
         List<AggregatedRankingEntry> candidates = new ArrayList<>();
 
         // Existing Sleeper/local players that are not drafted
@@ -89,23 +92,30 @@ public class DynastyRankingService {
                 continue;
             }
 
-            String norm = normalizeName(p.getFullName());
-            List<DynastyRankingEntry> sources = externalByName.getOrDefault(norm, List.of());
+                    boolean sleeperRookie = isSleeperRookie(p);
+                    List<DynastyRankingEntry> sources = findExternalSourcesForPlayer(
+                        p,
+                        externalByName,
+                        externalByLastName,
+                        sleeperRookie
+                    );
             Double externalAvg = avgRank(sources);
-                boolean matchedRookieSource = sources.stream()
+                    boolean matchedRookieSource = sleeperRookie && sources.stream()
                     .anyMatch(s -> "rookie".equalsIgnoreCase(s.getSource()));
 
-            AggregatedRankingEntry entry = AggregatedRankingEntry.builder()
+                boolean hasExternalRank = externalAvg != null;
+
+                AggregatedRankingEntry entry = AggregatedRankingEntry.builder()
                     .playerId(p.getPlayerId())
                     .playerName(p.getFullName())
                     .position(p.getPosition())
                     .team(p.getTeam())
-                    .rookie(isSleeperRookie(p) || matchedRookieSource)
+                        .rookie(sleeperRookie)
                     .sleeperFantasyPtsAvg(p.getFantasyPtsAvg())
                     .sleeperSearchRank(p.getSearchRank())
                     .externalAvgRank(externalAvg)
                     .externalRankCount(sources.size())
-                    .blendedScore(calcBlendedScore(p, externalAvg))
+                    .blendedScore(calcBlendedScore(p, externalAvg, sleeperRookie, hasExternalRank))
                     .sourceRanks(sources)
                     .build();
             candidates.add(entry);
@@ -159,7 +169,7 @@ public class DynastyRankingService {
         return sources.stream().mapToInt(DynastyRankingEntry::getRank).average().orElse(999.0);
     }
 
-    private double calcBlendedScore(Player p, Double externalAvgRank) {
+    private double calcBlendedScore(Player p, Double externalAvgRank, boolean rookieCandidate, boolean hasExternalRank) {
         // Higher score is better.
         double fptsComponent = 0;
         double adpComponent = 0;
@@ -177,13 +187,122 @@ public class DynastyRankingService {
             externalComponent = (1000.0 - externalAvgRank) / 1000.0;
         }
 
-        // Keep blended board anchored to Sleeper availability + ADP. External ranks
-        // influence ordering but should not drown out vetted Sleeper players.
+        // Blend rookies and veterans into one board:
+        // - Veterans: anchored to Sleeper production + ADP.
+        // - Rookies with external rank: substantial external influence.
+        // - Rookies without external rank: discounted so fringe names do not dominate.
+        if (rookieCandidate) {
+            if (hasExternalRank) {
+                double base = (fptsComponent * 0.10) + (adpComponent * 0.30) + (externalComponent * 0.28);
+                if (externalAvgRank != null && externalAvgRank <= 20) {
+                    base += 0.015;
+                }
+                if (p == null || p.getSearchRank() == null || p.getSearchRank() <= 0) {
+                    base -= 0.03;
+                }
+                return base;
+            }
+
+            double base = (fptsComponent * 0.05) + (adpComponent * 0.30);
+            base -= 0.06;
+
+            if (p == null || p.getSearchRank() == null || p.getSearchRank() <= 0 || p.getSearchRank() > 220) {
+                base -= 0.10;
+            }
+            if (p == null || p.getTeam() == null || p.getTeam().isBlank() || "FA".equalsIgnoreCase(p.getTeam())) {
+                base -= 0.06;
+            }
+            return base;
+        }
+
         double base = (fptsComponent * 0.60) + (adpComponent * 0.30) + (externalComponent * 0.10);
 
-        // Mild boost for players with multiple external confirmations.
-        // (Handled by caller through externalRankCount visibility; no hard rookie boost.)
         return base;
+    }
+
+    private List<DynastyRankingEntry> findExternalSourcesForPlayer(
+            Player player,
+            Map<String, List<DynastyRankingEntry>> externalByName,
+            Map<String, List<DynastyRankingEntry>> externalByLastName,
+            boolean sleeperRookie
+    ) {
+        if (player == null || player.getFullName() == null || player.getFullName().isBlank()) {
+            return List.of();
+        }
+
+        String normName = normalizeName(player.getFullName());
+        List<DynastyRankingEntry> exact = externalByName.getOrDefault(normName, List.of()).stream()
+                .filter(e -> sleeperRookie || !"rookie".equalsIgnoreCase(e.getSource()))
+                .toList();
+        if (!exact.isEmpty()) {
+            return exact;
+        }
+
+        if (!sleeperRookie) {
+            return List.of();
+        }
+
+        String last = lastNameOfNormalized(normName);
+        if (last.isBlank() || last.length() < 4) {
+            return List.of();
+        }
+
+        List<DynastyRankingEntry> byLast = externalByLastName.getOrDefault(last, List.of());
+        if (byLast.isEmpty()) {
+            return List.of();
+        }
+
+        String first = firstNameOfNormalized(normName);
+        List<DynastyRankingEntry> narrowed = byLast.stream()
+                .filter(e -> {
+                    String extNorm = normalizeName(e.getPlayerName());
+                    if (!extNorm.endsWith(" " + last) && !extNorm.equals(last)) {
+                        return false;
+                    }
+                    if (first.isBlank()) {
+                        return true;
+                    }
+                    return extNorm.startsWith(first + " ")
+                            || extNorm.startsWith(first.substring(0, 1) + " ");
+                })
+                .filter(e -> positionCompatible(player.getPosition(), e.getPosition()))
+                .toList();
+
+        if (!narrowed.isEmpty()) {
+            return narrowed;
+        }
+
+        return byLast.size() == 1 ? byLast : List.of();
+    }
+
+    private String firstNameOfNormalized(String normalizedName) {
+        if (normalizedName == null || normalizedName.isBlank()) {
+            return "";
+        }
+        String[] parts = normalizedName.split(" ");
+        return parts.length > 0 ? parts[0] : "";
+    }
+
+    private String lastNameOfNormalized(String normalizedName) {
+        if (normalizedName == null || normalizedName.isBlank()) {
+            return "";
+        }
+        String[] parts = normalizedName.split(" ");
+        return parts[parts.length - 1];
+    }
+
+    private boolean positionCompatible(String sleeperPos, String externalPos) {
+        if (externalPos == null || externalPos.isBlank()) {
+            return true;
+        }
+        if (sleeperPos == null || sleeperPos.isBlank()) {
+            return true;
+        }
+        return matchesPosition(sleeperPos, "PG") && matchesPosition(externalPos, "PG")
+                || matchesPosition(sleeperPos, "SG") && matchesPosition(externalPos, "SG")
+                || matchesPosition(sleeperPos, "SF") && matchesPosition(externalPos, "SF")
+                || matchesPosition(sleeperPos, "PF") && matchesPosition(externalPos, "PF")
+                || matchesPosition(sleeperPos, "C") && matchesPosition(externalPos, "C");
     }
 
     private boolean matchesPosition(String playerPosition, String wanted) {
