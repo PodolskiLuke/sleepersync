@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { draftApi, playersApi } from '../api/axiosClient'
+import { draftApi, playersApi, rankingsApi } from '../api/axiosClient'
 
 const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C']
 const STORAGE_KEY = 'draftHelperSession'
@@ -15,6 +15,14 @@ const rankingScore = (player) => {
   const adp = getNum(player?.searchRank, 9999)
   const adpComponent = adp > 0 ? (1000 - adp) / 1000 : 0
   return fpts * 0.75 + adpComponent * 0.25
+}
+
+const cleanDynastyName = (name) => {
+  if (!name) return ''
+  let cleaned = String(name).replace(/\s+/g, ' ').trim()
+  cleaned = cleaned.replace(/^(?:\d+(?:\.\d+)?\s+)+/, '').trim()
+  cleaned = cleaned.replace(/\s+\d+(?:\.\d+)?\s.*$/, '').trim()
+  return cleaned
 }
 
 const matchesPosition = (playerPosition, wanted) => {
@@ -66,6 +74,8 @@ export default function DraftHelper() {
   const [picks, setPicks] = useState([])
   const [myPicks, setMyPicks] = useState([])
   const [bestAvailable, setBestAvailable] = useState(null)
+  const [dynastyRankings, setDynastyRankings] = useState(null)
+  const [rankingMode, setRankingMode] = useState('SLEEPER') // SLEEPER | DYNASTY
   const [activeTab, setActiveTab] = useState('ALL')
   const [boardError, setBoardError] = useState('')
   const [initialLoading, setInitialLoading] = useState(false)
@@ -87,17 +97,32 @@ export default function DraftHelper() {
 
   const refreshBoard = useCallback(async (currentDraftId, currentUserId) => {
     try {
-      const [draftRes, picksRes, myPicksRes, bestRes] = await Promise.all([
+      const [draftRes, picksRes, myPicksRes, bestRes, dynastyRes] = await Promise.allSettled([
         draftApi.getDraft(currentDraftId),
         draftApi.getPicks(currentDraftId),
         draftApi.getMyPicks(currentDraftId, currentUserId),
         draftApi.getBestAvailable(currentDraftId, 15),
+        rankingsApi.getRemainingForDraft(currentDraftId, 20),
       ])
-      setDraft(draftRes.data)
-      setPicks(picksRes.data)
-      setMyPicks(myPicksRes.data)
 
-      const bestData = bestRes.data
+      if (draftRes.status !== 'fulfilled' || picksRes.status !== 'fulfilled' || myPicksRes.status !== 'fulfilled') {
+        throw (draftRes.reason || picksRes.reason || myPicksRes.reason)
+      }
+
+      setDraft(draftRes.value.data)
+      setPicks(picksRes.value.data)
+      setMyPicks(myPicksRes.value.data)
+
+      if (dynastyRes.status === 'fulfilled') {
+        setDynastyRankings(dynastyRes.value.data)
+      } else {
+        setDynastyRankings(null)
+        if (rankingMode === 'DYNASTY') {
+          setRankingMode('SLEEPER')
+        }
+      }
+
+      const bestData = bestRes.status === 'fulfilled' ? bestRes.value.data : null
       const hasBestData =
         (bestData?.overall && bestData.overall.length > 0) ||
         Object.values(bestData?.byPosition || {}).some((arr) => Array.isArray(arr) && arr.length > 0)
@@ -106,7 +131,7 @@ export default function DraftHelper() {
         setBestAvailable(bestData)
       } else {
         const allPlayersRes = await playersApi.getAll()
-        const fallback = buildFallbackBestAvailable(allPlayersRes.data, picksRes.data, 15)
+        const fallback = buildFallbackBestAvailable(allPlayersRes.data, picksRes.value.data, 15)
         setBestAvailable(fallback)
       }
       setBoardError('')
@@ -169,6 +194,7 @@ export default function DraftHelper() {
     setPicks([])
     setMyPicks([])
     setBestAvailable(null)
+    setDynastyRankings(null)
     setBoardError('')
   }
 
@@ -247,12 +273,37 @@ export default function DraftHelper() {
     .sort((a, b) => (b.pick_no ?? 0) - (a.pick_no ?? 0))
     .slice(0, 8)
 
-  const tabs = ['ALL', ...POSITIONS]
-  const activeList =
+  const tabs = rankingMode === 'DYNASTY'
+    ? ['ALL', ...POSITIONS, 'ROOKIES']
+    : ['ALL', ...POSITIONS]
+  const sleeperActiveList =
     activeTab === 'ALL' ? bestAvailable?.overall : bestAvailable?.byPosition?.[activeTab]
-  const rankedActiveList = [...(activeList || [])].sort(
+  const dynastyActiveListRaw =
+    activeTab === 'ALL'
+      ? dynastyRankings?.overall
+      : activeTab === 'ROOKIES'
+        ? (dynastyRankings?.rookies || dynastyRankings?.overall || []).filter((p) => p.rookie)
+        : dynastyRankings?.byPosition?.[activeTab]
+  const dynastyActiveList = activeTab === 'ALL' || activeTab === 'ROOKIES'
+    ? dynastyActiveListRaw
+    : (dynastyActiveListRaw || []).filter((p) => matchesPosition(p.position, activeTab))
+
+  const activeList = rankingMode === 'DYNASTY' ? dynastyActiveList : sleeperActiveList
+
+  const rankedActiveList = rankingMode === 'DYNASTY'
+    ? [...(activeList || [])].sort((a, b) => {
+      if (activeTab === 'ROOKIES') {
+        const aRank = a.externalAvgRank ?? Number.MAX_SAFE_INTEGER
+        const bRank = b.externalAvgRank ?? Number.MAX_SAFE_INTEGER
+        if (aRank !== bRank) return aRank - bRank
+      }
+      const aBlend = a.blendedScore ?? -999
+      const bBlend = b.blendedScore ?? -999
+      return bBlend - aBlend
+    })
+    : [...(activeList || [])].sort(
     (a, b) => rankingScore(b) - rankingScore(a)
-  )
+    )
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -366,20 +417,48 @@ export default function DraftHelper() {
             <div className="card">
               <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <h2 className="font-semibold">Best Available</h2>
-                <div className="flex gap-1 flex-wrap">
-                  {tabs.map((tab) => (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex gap-1 flex-wrap">
                     <button
-                      key={tab}
-                      onClick={() => setActiveTab(tab)}
+                      onClick={() => {
+                        setRankingMode('SLEEPER')
+                        if (activeTab === 'ROOKIES') setActiveTab('ALL')
+                      }}
                       className={`text-xs font-medium px-3 py-1.5 rounded-lg transition ${
-                        activeTab === tab
+                        rankingMode === 'SLEEPER'
                           ? 'bg-sleeper-accent text-sleeper-bg'
                           : 'bg-sleeper-bg border border-sleeper-border text-sleeper-muted hover:text-white'
                       }`}
                     >
-                      {tab}
+                      Sleeper
                     </button>
-                  ))}
+                    <button
+                      onClick={() => setRankingMode('DYNASTY')}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-lg transition ${
+                        rankingMode === 'DYNASTY'
+                          ? 'bg-sleeper-accent text-sleeper-bg'
+                          : 'bg-sleeper-bg border border-sleeper-border text-sleeper-muted hover:text-white'
+                      }`}
+                    >
+                      Dynasty + Rookies
+                    </button>
+                  </div>
+
+                  <div className="flex gap-1 flex-wrap">
+                    {tabs.map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`text-xs font-medium px-3 py-1.5 rounded-lg transition ${
+                          activeTab === tab
+                            ? 'bg-sleeper-accent text-sleeper-bg'
+                            : 'bg-sleeper-bg border border-sleeper-border text-sleeper-muted hover:text-white'
+                        }`}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -390,16 +469,75 @@ export default function DraftHelper() {
               ) : (
                 <div className="overflow-x-auto">
                   {/* Column headers */}
-                  <div className="grid grid-cols-[2rem_1fr_5.5rem_5.5rem_auto] gap-x-3 text-xs font-semibold text-sleeper-muted uppercase tracking-wider px-2 pb-2 border-b border-sleeper-border mb-1">
-                    <span>#</span>
-                    <span>Player</span>
-                    <span className="text-center">FPTS/G</span>
-                    <span className="text-center">ADP Rank</span>
-                    <span>Stats/G</span>
-                  </div>
+                  {rankingMode === 'DYNASTY' ? (
+                    <div className="grid grid-cols-[2rem_1fr_6rem_6.5rem_5.5rem] gap-x-3 text-xs font-semibold text-sleeper-muted uppercase tracking-wider px-2 pb-2 border-b border-sleeper-border mb-1">
+                      <span>#</span>
+                      <span>Player</span>
+                      <span className="text-center">Blend</span>
+                      <span className="text-center">Ext Rank</span>
+                      <span className="text-center">Rookie</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-[2rem_1fr_5.5rem_5.5rem_auto] gap-x-3 text-xs font-semibold text-sleeper-muted uppercase tracking-wider px-2 pb-2 border-b border-sleeper-border mb-1">
+                      <span>#</span>
+                      <span>Player</span>
+                      <span className="text-center">FPTS/G</span>
+                      <span className="text-center">ADP Rank</span>
+                      <span>Stats/G</span>
+                    </div>
+                  )}
 
                   <ul className="space-y-0.5">
                     {rankedActiveList.map((player, i) => {
+                      if (rankingMode === 'DYNASTY') {
+                        return (
+                          <li
+                            key={`${player.playerId || 'rookie'}-${player.playerName || player.fullName}-${i}`}
+                            className="grid grid-cols-[2rem_1fr_6rem_6.5rem_5.5rem] gap-x-3 items-center px-2 py-2 rounded-lg hover:bg-sleeper-border/30 transition"
+                          >
+                            <span className="text-xs text-sleeper-muted font-mono">{player.finalRank ?? i + 1}</span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-medium text-sm truncate">{cleanDynastyName(player.playerName || player.fullName)}</span>
+                              </div>
+                              <p className="text-xs text-sleeper-muted truncate">
+                                {player.position || '—'} · {player.team || 'FA'}
+                              </p>
+                            </div>
+
+                            <div className="text-center">
+                              {player.blendedScore != null ? (
+                                <span className="font-bold text-sm text-sleeper-accent">
+                                  {player.blendedScore.toFixed(2)}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-sleeper-muted">—</span>
+                              )}
+                            </div>
+
+                            <div className="text-center">
+                              {player.externalAvgRank != null ? (
+                                <span className="text-xs text-sleeper-muted font-mono">
+                                  #{Math.round(player.externalAvgRank)}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-sleeper-muted">—</span>
+                              )}
+                            </div>
+
+                            <div className="text-center">
+                              {player.rookie ? (
+                                <span className="text-[11px] px-2 py-1 rounded bg-sleeper-accent/20 text-sleeper-accent font-semibold">
+                                  Yes
+                                </span>
+                              ) : (
+                                <span className="text-xs text-sleeper-muted">No</span>
+                              )}
+                            </div>
+                          </li>
+                        )
+                      }
+
                       const hasFpts = player.fantasyPtsAvg != null
                       const hasStats = player.avgPts != null
                       return (

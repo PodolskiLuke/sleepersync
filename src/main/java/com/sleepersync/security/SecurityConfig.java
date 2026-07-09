@@ -41,7 +41,10 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Public endpoints - no token required
                 .requestMatchers(
-                    "/api/auth/**"
+                    "/api/auth/**",
+                    "/api/rankings/**",
+                    "/api/drafts/**",
+                    "/api/players/**"
                 ).permitAll()
                 // Everything else requires a valid JWT
                 .anyRequest().authenticated()

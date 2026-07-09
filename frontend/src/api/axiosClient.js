@@ -75,4 +75,14 @@ export const draftApi = {
     api.get(`/drafts/${draftId}/best-available`, { params: { limit } }),
 }
 
+// -------------------------------------------------------------------------
+// Rankings
+// -------------------------------------------------------------------------
+
+export const rankingsApi = {
+  scrape: () => api.get('/rankings/scrape'),
+  getRemainingForDraft: (draftId, limit = 20) =>
+    api.get(`/rankings/draft/${draftId}/remaining`, { params: { limit } }),
+}
+
 export default api

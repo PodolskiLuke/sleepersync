@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +44,10 @@ public class DraftService {
 
     private final SleeperApiClient sleeperApiClient;
     private final PlayerRepository playerRepository;
+
+    private static final long SLEEPER_PLAYERS_CACHE_TTL_MS = 10 * 60 * 1000L;
+    private volatile Map<String, SleeperPlayerDto> sleeperPlayersCache = Map.of();
+    private volatile long sleeperPlayersCacheAtMs = 0L;
 
     public DraftService(SleeperApiClient sleeperApiClient, PlayerRepository playerRepository) {
         this.sleeperApiClient = sleeperApiClient;
@@ -135,25 +140,11 @@ public class DraftService {
     // -------------------------------------------------------------------------
 
     public BestAvailableResponse getBestAvailable(String draftId, int limitPerPosition) {
-        List<DraftPickDto> picks = getPicks(draftId);
-        Set<String> pickedPlayerIds = picks.stream()
+        List<Player> available = getAllAvailablePlayers(draftId);
+        Set<String> pickedPlayerIds = getPicks(draftId).stream()
                 .map(DraftPickDto::getPlayerId)
                 .filter(id -> id != null && !id.isBlank())
                 .collect(Collectors.toSet());
-
-        SourcePlayersResult source = getSourcePlayers();
-        List<Player> sourcePlayers = source.players();
-
-        // Build available pool by removing all drafted player IDs.
-        List<Player> available = sourcePlayers.stream()
-            .filter(p -> p.getPlayerId() != null && !p.getPlayerId().isBlank())
-                .filter(p -> !pickedPlayerIds.contains(p.getPlayerId()))
-                .sorted(Comparator
-                    .comparing(Player::getFantasyPtsAvg,
-                        Comparator.nullsLast(Comparator.reverseOrder()))
-                    .thenComparing(Player::getSearchRank,
-                        Comparator.nullsLast(Integer::compareTo)))
-                .toList();
 
         List<Player> overall = available.stream().limit(Math.max(limitPerPosition, 30)).toList();
 
@@ -172,6 +163,27 @@ public class DraftService {
                 .totalPicksMade(pickedPlayerIds.size())
                 .build();
     }
+
+            public List<Player> getAllAvailablePlayers(String draftId) {
+            List<DraftPickDto> picks = getPicks(draftId);
+            Set<String> pickedPlayerIds = picks.stream()
+                .map(DraftPickDto::getPlayerId)
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toSet());
+
+            SourcePlayersResult source = getSourcePlayers();
+            List<Player> sourcePlayers = source.players();
+
+            return sourcePlayers.stream()
+                .filter(p -> p.getPlayerId() != null && !p.getPlayerId().isBlank())
+                .filter(p -> !pickedPlayerIds.contains(p.getPlayerId()))
+                .sorted(Comparator
+                    .comparing(Player::getFantasyPtsAvg,
+                        Comparator.nullsLast(Comparator.reverseOrder()))
+                    .thenComparing(Player::getSearchRank,
+                        Comparator.nullsLast(Integer::compareTo)))
+                .toList();
+            }
 
             public Map<String, Object> getBestAvailableDebug(String draftId, int limitPerPosition) {
             List<DraftPickDto> picks = getPicks(draftId);
@@ -228,21 +240,59 @@ public class DraftService {
 
             private SourcePlayersResult getSourcePlayers() {
         List<Player> localPlayers = playerRepository.findAll();
-        if (!localPlayers.isEmpty()) {
-                return new SourcePlayersResult(localPlayers, false);
-        }
 
-        log.warn("Local players table is empty; using Sleeper /players fallback for best-available pool");
-        Map<String, SleeperPlayerDto> sleeperPlayers = sleeperApiClient.getAllPlayers();
+        Map<String, SleeperPlayerDto> sleeperPlayers = getSleeperPlayersCached();
         if (sleeperPlayers == null || sleeperPlayers.isEmpty()) {
+            if (!localPlayers.isEmpty()) {
+                return new SourcePlayersResult(localPlayers, false);
+            }
             return new SourcePlayersResult(Collections.emptyList(), true);
         }
 
-        List<Player> fallbackPlayers = sleeperPlayers.values().stream()
-                .filter(dto -> dto.getPlayerId() != null && !dto.getPlayerId().isBlank())
-                .map(this::toPlayer)
-                .toList();
-        return new SourcePlayersResult(fallbackPlayers, true);
+        if (localPlayers.isEmpty()) {
+            log.warn("Local players table is empty; using Sleeper /players fallback for best-available pool");
+            List<Player> fallbackPlayers = sleeperPlayers.values().stream()
+                    .filter(dto -> dto.getPlayerId() != null && !dto.getPlayerId().isBlank())
+                    .map(this::toPlayer)
+                    .toList();
+            return new SourcePlayersResult(fallbackPlayers, true);
+        }
+
+        Map<String, Player> mergedById = new LinkedHashMap<>();
+        for (Player local : localPlayers) {
+            if (local.getPlayerId() == null || local.getPlayerId().isBlank()) {
+                continue;
+            }
+            mergedById.put(local.getPlayerId(), local);
+        }
+
+        for (SleeperPlayerDto dto : sleeperPlayers.values()) {
+            if (dto.getPlayerId() == null || dto.getPlayerId().isBlank()) {
+                continue;
+            }
+            if (!mergedById.containsKey(dto.getPlayerId())) {
+                mergedById.put(dto.getPlayerId(), toPlayer(dto));
+            }
+        }
+
+        return new SourcePlayersResult(new ArrayList<>(mergedById.values()), false);
+
+    }
+
+    private synchronized Map<String, SleeperPlayerDto> getSleeperPlayersCached() {
+        long now = System.currentTimeMillis();
+        if (!sleeperPlayersCache.isEmpty() && (now - sleeperPlayersCacheAtMs) < SLEEPER_PLAYERS_CACHE_TTL_MS) {
+            return sleeperPlayersCache;
+        }
+
+        Map<String, SleeperPlayerDto> fetched = sleeperApiClient.getAllPlayers();
+        if (fetched != null && !fetched.isEmpty()) {
+            sleeperPlayersCache = fetched;
+            sleeperPlayersCacheAtMs = now;
+            return sleeperPlayersCache;
+        }
+
+        return sleeperPlayersCache;
     }
 
     private Player toPlayer(SleeperPlayerDto dto) {
@@ -260,6 +310,7 @@ public class DraftService {
                 .position(dto.getPosition())
                 .team(dto.getTeam())
                 .age(dto.getAge())
+            .yearsExp(dto.getYearsExp())
                 .injuryStatus(dto.getInjuryStatus())
                 .searchRank(dto.getSearchRank())
                 .active(dto.getActive())

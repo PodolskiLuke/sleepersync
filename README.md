@@ -12,6 +12,7 @@ A dynasty basketball fantasy assistant that syncs directly with the [Sleeper](ht
   - Track your own picks as they happen
   - See recent picks across the whole draft
   - Browse best-available players overall and by position (PG/SG/SF/PF/C)
+- **External Rankings Merge** *(new)* — scrape next-season + dynasty ranking pages and blend them with Sleeper player data to rank remaining draft options (including rookie-only names not yet in local Sleeper sync).
 - More tools planned: Start/Sit Advisor, Trade Analyzer, Player Rankings.
 
 ## Tech Stack
@@ -116,8 +117,34 @@ The app runs at `http://localhost:3000` and proxies `/api/*` requests to the Spr
 | Leagues | `/api/leagues`  |
 | Players | `/api/players`  |
 | Drafts  | `/api/drafts`   |
+| Rankings| `/api/rankings` |
 
 All routes except `/api/auth/**` require a valid JWT (`Authorization: Bearer <token>`).
+
+### Rankings endpoints
+
+- `GET /api/rankings/scrape`
+   - Scrapes configured ranking URLs and returns normalized raw ranking rows.
+- `GET /api/rankings/draft/{draftId}/remaining?limit=20`
+   - Returns blended rankings for remaining players in that draft.
+   - Logic uses: Sleeper synced players + external scraped ranks, minus already drafted IDs.
+   - Includes rookie-only names when present in external sources.
+
+### Configure scraping sources
+
+Set these in [src/main/resources/application.properties](src/main/resources/application.properties):
+
+```properties
+rankings.scraper.enabled=true
+rankings.scraper.timeout-ms=8000
+rankings.scraper.next-season-url=https://example.com/next-season-rankings
+rankings.scraper.dynasty-url=https://example.com/dynasty-rankings
+rankings.scraper.rookie-url=https://example.com/rookie-rankings
+```
+
+In Draft Helper, use the ranking mode toggle to switch between:
+- `Sleeper` (native board + Sleeper stats/ADP)
+- `Dynasty + Rookies` (external next-season + dynasty + rookie blended rankings)
 
 ## Testing
 
