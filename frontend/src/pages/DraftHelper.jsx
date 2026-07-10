@@ -10,11 +10,26 @@ const getNum = (value, fallback) => {
   return Number.isFinite(n) ? n : fallback
 }
 
+const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value))
+
+// Mirrors the backend SLEEPER-board score: shrink small-sample production and
+// gate/anchor it by Sleeper ADP so anomalies (great short line, poor ADP) don't
+// leapfrog established, highly-drafted producers.
 const rankingScore = (player) => {
   const fpts = getNum(player?.fantasyPtsAvg, 0)
-  const adp = getNum(player?.searchRank, 9999)
-  const adpComponent = adp > 0 ? (1000 - adp) / 1000 : 0
-  return fpts * 0.75 + adpComponent * 0.25
+  const prodNorm = clamp(fpts / 50, 0, 1.1)
+
+  const games = getNum(player?.gamesPlayed, 0)
+  const sampleConfidence = clamp(games / 25, 0, 1)
+  const shrunkProd = prodNorm * sampleConfidence
+
+  const adp = getNum(player?.searchRank, 0)
+  const hasAdp = adp > 0
+  const adpAnchor = hasAdp ? clamp((300 - adp) / 300, 0, 1) : 0
+  const adpConfidence = hasAdp ? clamp((350 - adp) / 350, 0.15, 1) : 0.3
+
+  const corroboratedProd = shrunkProd * adpConfidence
+  return corroboratedProd * 0.68 + adpAnchor * 0.32
 }
 
 const cleanDynastyName = (name) => {

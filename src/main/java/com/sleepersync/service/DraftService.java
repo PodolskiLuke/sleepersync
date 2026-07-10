@@ -178,8 +178,7 @@ public class DraftService {
                 .filter(p -> p.getPlayerId() != null && !p.getPlayerId().isBlank())
                 .filter(p -> !pickedPlayerIds.contains(p.getPlayerId()))
                 .sorted(Comparator
-                    .comparing(Player::getFantasyPtsAvg,
-                        Comparator.nullsLast(Comparator.reverseOrder()))
+                    .comparingDouble((Player p) -> sleeperBoardScore(p)).reversed()
                     .thenComparing(Player::getSearchRank,
                         Comparator.nullsLast(Integer::compareTo)))
                 .toList();
@@ -197,8 +196,7 @@ public class DraftService {
                 .filter(p -> p.getPlayerId() != null && !p.getPlayerId().isBlank())
                 .filter(p -> !pickedPlayerIds.contains(p.getPlayerId()))
                 .sorted(Comparator
-                    .comparing(Player::getFantasyPtsAvg,
-                        Comparator.nullsLast(Comparator.reverseOrder()))
+                    .comparingDouble((Player p) -> sleeperBoardScore(p)).reversed()
                     .thenComparing(Player::getSearchRank,
                         Comparator.nullsLast(Integer::compareTo)))
                 .toList();
@@ -339,6 +337,49 @@ public class DraftService {
             case "C" -> tokenSet.contains("C");
             default -> false;
         };
+    }
+
+    /**
+     * Ranking score for the "SLEEPER" mode board.
+     *
+     * Blends per-game fantasy production with Sleeper ADP (searchRank) so that
+     * small-sample or low-ADP anomalies (e.g. a two-way player with a strong
+     * 13-game line but an ADP near ~400) cannot leapfrog established,
+     * highly-drafted producers. Production is shrunk toward zero for tiny
+     * samples and gated by an ADP-confidence factor; ADP also contributes a
+     * direct anchor so consensus-valued players surface appropriately.
+     */
+    double sleeperBoardScore(Player p) {
+        if (p == null) {
+            return 0.0;
+        }
+
+        double fpts = p.getFantasyPtsAvg() != null ? p.getFantasyPtsAvg() : 0.0;
+        double prodNorm = clamp(fpts / 50.0, 0.0, 1.1);
+
+        int games = p.getGamesPlayed() != null ? p.getGamesPlayed() : 0;
+        double sampleConfidence = clamp(games / 25.0, 0.0, 1.0);
+        double shrunkProd = prodNorm * sampleConfidence;
+
+        Integer searchRank = p.getSearchRank();
+        boolean hasAdp = searchRank != null && searchRank > 0;
+        double adpAnchor;
+        double adpConfidence;
+        if (hasAdp) {
+            adpAnchor = clamp((300.0 - searchRank) / 300.0, 0.0, 1.0);
+            adpConfidence = clamp((350.0 - searchRank) / 350.0, 0.15, 1.0);
+        } else {
+            // Unknown ADP (e.g. not-yet-updated rookies): mild discount, not a zero.
+            adpAnchor = 0.0;
+            adpConfidence = 0.30;
+        }
+
+        double corroboratedProd = shrunkProd * adpConfidence;
+        return corroboratedProd * 0.68 + adpAnchor * 0.32;
+    }
+
+    private static double clamp(double value, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, value));
     }
 
     private record SourcePlayersResult(List<Player> players, boolean usedFallback) {
