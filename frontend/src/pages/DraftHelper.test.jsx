@@ -263,7 +263,7 @@ describe('DraftHelper setup screen', () => {
     await screen.findByText('@hoopsdynasty')
 
     await userEvent.click(screen.getByRole('button', { name: 'Dynasty + Rookies' }))
-    await userEvent.click(screen.getByRole('button', { name: 'SF' }))
+    await userEvent.click(screen.getByRole('button', { name: /\bSF\b/ }))
 
     expect(await screen.findByText('Bradley Beal')).toBeInTheDocument()
   })
@@ -303,7 +303,7 @@ describe('DraftHelper setup screen', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Connect to Draft' }))
 
     await screen.findByText('@hoopsdynasty')
-    await userEvent.click(screen.getByRole('button', { name: 'SF' }))
+    await userEvent.click(screen.getByRole('button', { name: /\bSF\b/ }))
 
     expect(await screen.findByText('Bradley Beal')).toBeInTheDocument()
   })
@@ -356,5 +356,66 @@ describe('DraftHelper setup screen', () => {
 
     expect(screen.getByRole('button', { name: 'ROOKIES (1)' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'PF (1)' })).toBeInTheDocument()
+  })
+
+  it('falls back to players API when best available response is empty', async () => {
+    draftApi.resolveUser.mockResolvedValue({
+      data: { userId: 'U1', username: 'hoopsdynasty' },
+    })
+    draftApi.getDraft.mockResolvedValue({
+      data: { status: 'drafting', settings: {}, league_id: 'L1' },
+    })
+    draftApi.getPicks.mockResolvedValue({ data: [] })
+    draftApi.getMyPicks.mockResolvedValue({ data: [] })
+    draftApi.getBestAvailable.mockResolvedValue({ data: { overall: [], byPosition: {} } })
+    rankingsApi.getRemainingForDraft.mockResolvedValue({ data: { overall: [], byPosition: {}, rookies: [] } })
+    playersApi.getAll.mockResolvedValue({
+      data: [
+        {
+          playerId: '1',
+          fullName: 'Fallback Guard',
+          position: 'PG/SG',
+          team: 'DAL',
+          searchRank: 20,
+          fantasyPtsAvg: 25,
+          gamesPlayed: 50,
+          avgPts: 18,
+          avgReb: 4,
+          avgAst: 6,
+          avgStl: 1,
+          avgBlk: 0,
+        },
+      ],
+    })
+    leaguesApi.getLeague.mockResolvedValue({ data: {} })
+
+    render(<DraftHelper />)
+
+    await userEvent.type(screen.getByLabelText('Sleeper Username'), 'hoopsdynasty')
+    await userEvent.type(screen.getByLabelText('League Draft ID'), '123')
+    await userEvent.click(screen.getByRole('button', { name: 'Connect to Draft' }))
+
+    expect(await screen.findByText('Fallback Guard')).toBeInTheDocument()
+    expect(playersApi.getAll).toHaveBeenCalled()
+  })
+
+  it('returns to setup screen when changing draft', async () => {
+    draftApi.resolveUser.mockResolvedValue({
+      data: { userId: 'U1', username: 'hoopsdynasty' },
+    })
+    draftApi.getDraft.mockResolvedValue({ data: { status: 'drafting', settings: {} } })
+    stubBoardApis()
+
+    render(<DraftHelper />)
+
+    await userEvent.type(screen.getByLabelText('Sleeper Username'), 'hoopsdynasty')
+    await userEvent.type(screen.getByLabelText('League Draft ID'), '123')
+    await userEvent.click(screen.getByRole('button', { name: 'Connect to Draft' }))
+
+    expect(await screen.findByText('@hoopsdynasty')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Change Draft' }))
+
+    expect(screen.getByRole('button', { name: 'Connect to Draft' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Sleeper Username')).toBeInTheDocument()
   })
 })

@@ -55,9 +55,12 @@ export default function PlayerRankings() {
   let filtered = rankings.filter((player) => {
     const displayPosition = getDisplayPosition(player)
     const matchesPos = selectedPosition === 'ALL' || matchesPosition(displayPosition, selectedPosition)
-    const matchesSearch = !searchTerm || 
+    const matchesSearch = !searchTerm ||
       player.playerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      player.team?.toLowerCase().includes(searchTerm.toLowerCase())
+      player.team?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      getDisplayPosition(player).toLowerCase().includes(searchTerm.toLowerCase())
+    ||
+      (player.team ?? '').toLowerCase().includes(searchTerm.toLowerCase())
     return matchesPos && matchesSearch
   })
 

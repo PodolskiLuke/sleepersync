@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
 vi.mock('../api/axiosClient', () => ({
@@ -100,9 +101,22 @@ describe('PlayerRankings page', () => {
 
     expect(await screen.findByText('Klay Thompson')).toBeInTheDocument()
     await screen.findByText('PF/SF/SG')
-    await screen.getByRole('button', { name: 'PF' }).click()
+    await userEvent.click(screen.getByRole('button', { name: 'PF (1)' }))
 
     expect(screen.getByText('Klay Thompson')).toBeInTheDocument()
+  })
+
+  it('sorts by ADP when selected', async () => {
+    rankingsApi.getAllRankings.mockResolvedValue({ data: MOCK_RANKINGS })
+    renderPlayerRankings()
+
+    expect(await screen.findByText('Luka Doncic')).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'adp')
+
+    const playerNames = screen.getAllByRole('row').slice(1).map((row) => row.textContent)
+    expect(playerNames[0]).toContain('Luka Doncic')
+    expect(playerNames[1]).toContain('Jayson Tatum')
+    expect(playerNames[2]).toContain('Klay Thompson')
   })
 
   it('displays error message on API failure', async () => {
