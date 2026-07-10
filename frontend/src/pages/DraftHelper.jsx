@@ -293,6 +293,10 @@ export default function DraftHelper() {
   const rankedActiveList = rankingMode === 'DYNASTY'
     ? [...(activeList || [])].sort((a, b) => {
       if (activeTab === 'ROOKIES') {
+        const aBlend = a.blendedScore ?? -999
+        const bBlend = b.blendedScore ?? -999
+        if (aBlend !== bBlend) return bBlend - aBlend
+
         const aRank = a.externalAvgRank ?? Number.MAX_SAFE_INTEGER
         const bRank = b.externalAvgRank ?? Number.MAX_SAFE_INTEGER
         if (aRank !== bRank) return aRank - bRank

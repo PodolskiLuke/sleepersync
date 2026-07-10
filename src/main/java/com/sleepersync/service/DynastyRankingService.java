@@ -87,8 +87,7 @@ public class DynastyRankingService {
             String playerNameNorm = normalizeName(p.getFullName());
             if (p.getPlayerId() == null
                 || pickedPlayerIds.contains(p.getPlayerId())
-                || draftedNameNorms.contains(playerNameNorm)
-                || isDraftedByLastNameHeuristic(playerNameNorm, draftedNameNorms)) {
+                || draftedNameNorms.contains(playerNameNorm)) {
                 continue;
             }
 
@@ -146,10 +145,34 @@ public class DynastyRankingService {
                 .overall(ranked.stream().limit(Math.max(limitPerPosition, 50)).toList())
             .rookies(ranked.stream()
                 .filter(AggregatedRankingEntry::isRookie)
-                .limit(Math.max(limitPerPosition * 4, 100))
+                .filter(this::isRookieQualityCandidate)
+                .limit(Math.max(limitPerPosition * 3, 60))
                 .toList())
                 .byPosition(byPosition)
                 .build();
+    }
+
+    private boolean isRookieQualityCandidate(AggregatedRankingEntry entry) {
+        if (entry == null) {
+            return false;
+        }
+
+        boolean hasTeam = hasNbaTeamCode(entry.getTeam());
+        boolean hasExternal = entry.getExternalAvgRank() != null;
+        Integer sleeperRank = entry.getSleeperSearchRank();
+        boolean strongSleeperRank = sleeperRank != null && sleeperRank > 0 && sleeperRank <= 220;
+
+        // Keep all rookies that are already on NBA teams.
+        if (hasTeam) {
+            return true;
+        }
+
+        // Unsigned/FA rookies are kept only if both signals are strong.
+        if (!hasTeam && hasExternal && entry.getExternalAvgRank() <= 30 && strongSleeperRank) {
+            return true;
+        }
+
+        return false;
     }
 
     private Optional<String> extractPickName(DraftPickDto pick) {
@@ -170,54 +193,97 @@ public class DynastyRankingService {
     }
 
     private double calcBlendedScore(Player p, Double externalAvgRank, boolean rookieCandidate, boolean hasExternalRank) {
-        // Higher score is better.
-        double fptsComponent = 0;
-        double adpComponent = 0;
-        double externalComponent = 0;
+        // All component scores are normalized to roughly 0..1 so that veterans
+        // (scored on production + ADP) and rookies (scored on draft/consensus rank)
+        // sit on ONE comparable scale. Higher score is better.
+        double prodNorm = 0.0;
 
         if (p != null && p.getFantasyPtsAvg() != null) {
-            fptsComponent = p.getFantasyPtsAvg() * 1.0;
+            prodNorm = clamp(p.getFantasyPtsAvg() / 50.0, 0.0, 1.1);
         }
 
-        if (p != null && p.getSearchRank() != null && p.getSearchRank() > 0) {
-            adpComponent = (1000.0 - p.getSearchRank()) / 1000.0;
+        // Shrink production toward zero for small sample sizes so a handful of
+        // garbage-time games cannot rocket a fringe player up the board.
+        double sampleConfidence = 1.0;
+        if (p != null && p.getGamesPlayed() != null) {
+            sampleConfidence = clamp(p.getGamesPlayed() / 20.0, 0.0, 1.0);
         }
+        double prodEff = prodNorm * sampleConfidence;
 
+        // Sleeper dynasty ADP (search_rank): lower number = more valued.
+        Integer searchRank = (p != null) ? p.getSearchRank() : null;
+        boolean hasAdp = searchRank != null && searchRank > 0;
+        double adpNorm = hasAdp ? clamp((400.0 - searchRank) / 400.0, 0.0, 1.0) : 0.0;
+
+        double extNorm = 0.0;
         if (externalAvgRank != null && externalAvgRank > 0) {
-            externalComponent = (1000.0 - externalAvgRank) / 1000.0;
+            extNorm = clamp((200.0 - externalAvgRank) / 200.0, 0.0, 1.0);
         }
 
         // Blend rookies and veterans into one board:
-        // - Veterans: anchored to Sleeper production + ADP.
-        // - Rookies with external rank: substantial external influence.
-        // - Rookies without external rank: discounted so fringe names do not dominate.
+        // - Veterans: production gated by dynasty ADP (see below).
+        // - Rookies with a draft/consensus rank: mapped into a dynasty-value band so
+        //   elite prospects sit near the top and late picks sink, interleaving with vets.
+        // - Rookies without any external signal: discounted so fringe names do not dominate.
         if (rookieCandidate) {
-            if (hasExternalRank) {
-                double base = (fptsComponent * 0.10) + (adpComponent * 0.30) + (externalComponent * 0.28);
-                if (externalAvgRank != null && externalAvgRank <= 20) {
-                    base += 0.015;
+            boolean hasNbaTeam = hasNbaTeam(p);
+
+            if (hasExternalRank && externalAvgRank != null) {
+                double extValue = clamp(0.62 - (externalAvgRank - 1.0) * 0.010, 0.06, 0.62);
+                double score = extValue + (prodEff * 0.40);
+                // Sleeper rookie ADP is largely un-updated (null) right now. Only let it
+                // corroborate when actually present; never penalize a rookie for a null.
+                if (hasAdp) {
+                    score += (adpNorm - 0.5) * 0.12;
                 }
-                if (p == null || p.getSearchRank() == null || p.getSearchRank() <= 0) {
-                    base -= 0.03;
-                }
-                return base;
+                score += hasNbaTeam ? 0.02 : -0.06;
+                return score;
             }
 
-            double base = (fptsComponent * 0.05) + (adpComponent * 0.30);
-            base -= 0.06;
-
-            if (p == null || p.getSearchRank() == null || p.getSearchRank() <= 0 || p.getSearchRank() > 220) {
-                base -= 0.10;
+            // Rookie with no external signal: keep low so unknown free agents
+            // stay near the bottom unless they are actually producing.
+            double score = (prodEff * 0.40) - 0.10;
+            if (hasAdp) {
+                score += adpNorm * 0.20;
             }
-            if (p == null || p.getTeam() == null || p.getTeam().isBlank() || "FA".equalsIgnoreCase(p.getTeam())) {
-                base -= 0.06;
+            if (!hasNbaTeam) {
+                score -= 0.10;
             }
-            return base;
+            return score;
         }
 
-        double base = (fptsComponent * 0.60) + (adpComponent * 0.30) + (externalComponent * 0.10);
+        // Veterans: ADP is the market's dynasty valuation, so it BOTH anchors the score
+        // AND gates how much we trust raw production. A big per-game line paired with a
+        // poor/absent ADP (small-sample flukes, end-of-bench players like Julian Reese)
+        // gets its production heavily discounted instead of riding to the top.
+        double adpAnchor = hasAdp ? adpNorm : 0.12;
+        double adpConfidence = hasAdp ? clamp((300.0 - searchRank) / 300.0, 0.15, 1.0) : 0.25;
+        double corroboratedProd = prodEff * adpConfidence;
 
-        return base;
+        return (corroboratedProd * 0.62) + (adpAnchor * 0.32) + (extNorm * 0.06);
+    }
+
+    private double clamp(double value, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, value));
+    }
+
+    private boolean hasNbaTeam(Player player) {
+        if (player == null || player.getTeam() == null) {
+            return false;
+        }
+        return hasNbaTeamCode(player.getTeam());
+    }
+
+    private boolean hasNbaTeamCode(String teamValue) {
+        if (teamValue == null) {
+            return false;
+        }
+
+        String team = teamValue.trim();
+        if (team.isBlank() || "FA".equalsIgnoreCase(team)) {
+            return false;
+        }
+        return team.length() >= 2 && team.length() <= 4;
     }
 
     private List<DynastyRankingEntry> findExternalSourcesForPlayer(
@@ -328,24 +394,6 @@ public class DynastyRankingService {
                 .replaceAll("\\s+", " ")
                 .trim();
         return normalized;
-    }
-
-    private boolean isDraftedByLastNameHeuristic(String normalizedName, Set<String> draftedNameNorms) {
-        if (normalizedName == null || normalizedName.isBlank()) {
-            return false;
-        }
-
-        String[] parts = normalizedName.split(" ");
-        if (parts.length < 2) {
-            return false;
-        }
-
-        String last = parts[parts.length - 1];
-        if (last.length() < 4) {
-            return false;
-        }
-
-        return draftedNameNorms.stream().anyMatch(dn -> dn.endsWith(" " + last));
     }
 
     private boolean isSleeperRookie(Player player) {
