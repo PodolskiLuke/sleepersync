@@ -27,7 +27,8 @@ const FEATURES = [
     title: 'Player Rankings',
     description: 'Dynasty and redraft rankings updated with the latest performance data.',
     icon: '📊',
-    available: false,
+    available: true,
+    path: '/player-rankings',
   },
 ]
 

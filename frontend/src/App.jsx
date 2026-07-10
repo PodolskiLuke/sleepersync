@@ -9,6 +9,7 @@ import LinkSleeper from './pages/LinkSleeper'
 import SelectLeague from './pages/SelectLeague'
 import Dashboard from './pages/Dashboard'
 import DraftHelper from './pages/DraftHelper'
+import PlayerRankings from './pages/PlayerRankings'
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
 
             {/* Tools */}
             <Route path="/draft-helper" element={<DraftHelper />} />
+            <Route path="/player-rankings" element={<PlayerRankings />} />
           </Route>
 
           {/* Default redirect */}

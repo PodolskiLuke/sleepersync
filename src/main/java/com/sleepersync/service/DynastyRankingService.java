@@ -4,7 +4,6 @@ import com.sleepersync.model.dto.AggregatedRankingEntry;
 import com.sleepersync.model.dto.DraftPickDto;
 import com.sleepersync.model.dto.DynastyRankingEntry;
 import com.sleepersync.model.dto.RemainingDraftRankingsResponse;
-import com.sleepersync.model.dto.BestAvailableResponse;
 import com.sleepersync.model.entity.Player;
 import com.sleepersync.repository.PlayerRepository;
 import org.springframework.stereotype.Service;
@@ -44,6 +43,17 @@ public class DynastyRankingService {
         return rankingScraperService.scrapeAllConfigured();
     }
 
+    /**
+     * Get all ranked players (no draft filtering).
+     * Returns all players ranked by blended score from Sleeper + external sources.
+     * Uses conservative rookie scoring so proven veterans rank higher than unproven prospects.
+     */
+    public List<AggregatedRankingEntry> getAllRankings() {
+        List<Player> allPlayers = playerRepository.findAll();
+
+        return buildRankings(allPlayers, Set.of(), Set.of(), false);
+    }
+
     public RemainingDraftRankingsResponse getRemainingRankings(String draftId, int limitPerPosition) {
         List<DraftPickDto> picks = draftService.getPicks(draftId);
         Set<String> pickedPlayerIds = picks.stream()
@@ -55,14 +65,6 @@ public class DynastyRankingService {
         // available pool (not capped top-N) so rookie candidates are not dropped.
         List<Player> availablePlayers = draftService.getAllAvailablePlayers(draftId);
 
-        Map<String, Player> byNameNorm = availablePlayers.stream()
-                .filter(p -> p.getFullName() != null && !p.getFullName().isBlank())
-                .collect(Collectors.toMap(
-                        p -> normalizeName(p.getFullName()),
-                        p -> p,
-                        (a, b) -> a
-                ));
-
         Set<String> draftedNameNorms = picks.stream()
             .map(this::extractPickName)
             .flatMap(Optional::stream)
@@ -70,64 +72,12 @@ public class DynastyRankingService {
             .filter(n -> !n.isBlank())
             .collect(Collectors.toSet());
 
-        List<DynastyRankingEntry> external = rankingScraperService.scrapeAllConfigured();
-
-        Map<String, List<DynastyRankingEntry>> externalByName = external.stream()
-                .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
-                .collect(Collectors.groupingBy(e -> normalizeName(e.getPlayerName())));
-
-        Map<String, List<DynastyRankingEntry>> externalByLastName = external.stream()
-            .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
-            .collect(Collectors.groupingBy(e -> lastNameOfNormalized(normalizeName(e.getPlayerName()))));
-
-        List<AggregatedRankingEntry> candidates = new ArrayList<>();
-
-        // Existing Sleeper/local players that are not drafted
-        for (Player p : availablePlayers) {
-            String playerNameNorm = normalizeName(p.getFullName());
-            if (p.getPlayerId() == null
-                || pickedPlayerIds.contains(p.getPlayerId())
-                || draftedNameNorms.contains(playerNameNorm)) {
-                continue;
-            }
-
-                    boolean sleeperRookie = isSleeperRookie(p);
-                    List<DynastyRankingEntry> sources = findExternalSourcesForPlayer(
-                        p,
-                        externalByName,
-                        externalByLastName,
-                        sleeperRookie
-                    );
-            Double externalAvg = avgRank(sources);
-                    boolean matchedRookieSource = sleeperRookie && sources.stream()
-                    .anyMatch(s -> "rookie".equalsIgnoreCase(s.getSource()));
-
-                boolean hasExternalRank = externalAvg != null;
-
-                AggregatedRankingEntry entry = AggregatedRankingEntry.builder()
-                    .playerId(p.getPlayerId())
-                    .playerName(p.getFullName())
-                    .position(p.getPosition())
-                    .team(p.getTeam())
-                        .rookie(sleeperRookie)
-                    .sleeperFantasyPtsAvg(p.getFantasyPtsAvg())
-                    .sleeperSearchRank(p.getSearchRank())
-                    .externalAvgRank(externalAvg)
-                    .externalRankCount(sources.size())
-                    .blendedScore(calcBlendedScore(p, externalAvg, sleeperRookie, hasExternalRank))
-                    .sourceRanks(sources)
-                    .build();
-            candidates.add(entry);
-        }
-
-        List<AggregatedRankingEntry> ranked = candidates.stream()
-                .sorted(Comparator.comparing(AggregatedRankingEntry::getBlendedScore, Comparator.reverseOrder()))
-                .toList();
-
-        int rank = 1;
-        for (AggregatedRankingEntry e : ranked) {
-            e.setFinalRank(rank++);
-        }
+        List<AggregatedRankingEntry> ranked = buildRankings(
+                availablePlayers,
+                pickedPlayerIds,
+                draftedNameNorms,
+                false
+        );
 
         Map<String, List<AggregatedRankingEntry>> byPosition = new LinkedHashMap<>();
         for (String pos : POSITION_ORDER) {
@@ -151,6 +101,74 @@ public class DynastyRankingService {
                 .byPosition(byPosition)
                 .build();
     }
+
+            private List<AggregatedRankingEntry> buildRankings(
+                List<Player> players,
+                Set<String> excludedPlayerIds,
+                Set<String> excludedNameNorms,
+                boolean forDraftMode
+            ) {
+            List<DynastyRankingEntry> external = rankingScraperService.scrapeAllConfigured();
+
+            Map<String, List<DynastyRankingEntry>> externalByName = external.stream()
+                .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
+                .collect(Collectors.groupingBy(e -> normalizeName(e.getPlayerName())));
+
+            Map<String, List<DynastyRankingEntry>> externalByLastName = external.stream()
+                .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
+                .collect(Collectors.groupingBy(e -> lastNameOfNormalized(normalizeName(e.getPlayerName()))));
+
+            List<AggregatedRankingEntry> candidates = new ArrayList<>();
+
+            for (Player p : players) {
+                if (p == null || p.getFullName() == null || p.getFullName().isBlank()) {
+                continue;
+                }
+
+                String playerNameNorm = normalizeName(p.getFullName());
+                if (p.getPlayerId() == null
+                    || excludedPlayerIds.contains(p.getPlayerId())
+                    || excludedNameNorms.contains(playerNameNorm)) {
+                continue;
+                }
+
+                boolean sleeperRookie = isSleeperRookie(p);
+                List<DynastyRankingEntry> sources = findExternalSourcesForPlayer(
+                    p,
+                    externalByName,
+                    externalByLastName,
+                    sleeperRookie
+                );
+                Double externalAvg = avgRank(sources);
+                boolean hasExternalRank = externalAvg != null;
+
+                AggregatedRankingEntry entry = AggregatedRankingEntry.builder()
+                    .playerId(p.getPlayerId())
+                    .playerName(p.getFullName())
+                    .position(p.getPosition())
+                    .team(p.getTeam())
+                    .rookie(sleeperRookie)
+                    .sleeperFantasyPtsAvg(p.getFantasyPtsAvg())
+                    .sleeperSearchRank(p.getSearchRank())
+                    .externalAvgRank(externalAvg)
+                    .externalRankCount(sources.size())
+                    .blendedScore(calcBlendedScore(p, externalAvg, sleeperRookie, hasExternalRank, forDraftMode))
+                    .sourceRanks(sources)
+                    .build();
+                candidates.add(entry);
+            }
+
+            List<AggregatedRankingEntry> ranked = candidates.stream()
+                .sorted(Comparator.comparing(AggregatedRankingEntry::getBlendedScore, Comparator.reverseOrder()))
+                .toList();
+
+            int rank = 1;
+            for (AggregatedRankingEntry entry : ranked) {
+                entry.setFinalRank(rank++);
+            }
+
+            return ranked;
+            }
 
     private boolean isRookieQualityCandidate(AggregatedRankingEntry entry) {
         if (entry == null) {
@@ -192,10 +210,18 @@ public class DynastyRankingService {
         return sources.stream().mapToInt(DynastyRankingEntry::getRank).average().orElse(999.0);
     }
 
-    private double calcBlendedScore(Player p, Double externalAvgRank, boolean rookieCandidate, boolean hasExternalRank) {
+    private double calcBlendedScore(Player p, Double externalAvgRank, boolean rookieCandidate, boolean hasExternalRank, boolean forDraftMode) {
         // All component scores are normalized to roughly 0..1 so that veterans
         // (scored on production + ADP) and rookies (scored on draft/consensus rank)
         // sit on ONE comparable scale. Higher score is better.
+        //
+        // forDraftMode=true: Used in draft context (remaining available players).
+        //   Rookies with draft rankings can be scored high since they're competing
+        //   for draft slots vs other rookies.
+        //
+        // forDraftMode=false: Used in all-players ranking context.
+        //   Rookies should be scored conservatively compared to proven veterans,
+        //   since unproven prospects shouldn't outrank multi-year track records.
         double prodNorm = 0.0;
 
         if (p != null && p.getFantasyPtsAvg() != null) {
@@ -229,15 +255,52 @@ public class DynastyRankingService {
             boolean hasNbaTeam = hasNbaTeam(p);
 
             if (hasExternalRank && externalAvgRank != null) {
-                double extValue = clamp(0.62 - (externalAvgRank - 1.0) * 0.010, 0.06, 0.62);
-                double score = extValue + (prodEff * 0.40);
-                // Sleeper rookie ADP is largely un-updated (null) right now. Only let it
-                // corroborate when actually present; never penalize a rookie for a null.
-                if (hasAdp) {
-                    score += (adpNorm - 0.5) * 0.12;
+                // In draft mode, score rookies optimistically based on draft consensus
+                if (forDraftMode) {
+                    double extValue = clamp(0.62 - (externalAvgRank - 1.0) * 0.010, 0.06, 0.62);
+                    double score = extValue + (prodEff * 0.40);
+                    if (hasAdp) {
+                        score += (adpNorm - 0.5) * 0.12;
+                    }
+                    score += hasNbaTeam ? 0.02 : -0.06;
+                    return score;
+                } else {
+                    // In full-ranking mode, heavily cap prospect upside so incoming
+                    // rookies don't leapfrog proven elite dynasty assets.
+                    // Keep top prospects meaningfully valuable in dynasty while
+                    // still below the proven top veteran tier.
+                    // #1 rookie ~0.66, #10 ~0.62, #25 ~0.54 before tier/team tweaks.
+                    double rookieExtValue = clamp(0.66 - (externalAvgRank - 1.0) * 0.005, 0.18, 0.66);
+                    double score = rookieExtValue + (prodEff * 0.10);
+
+                    // Prospect tier uplift (non-draft mode only).
+                    if (externalAvgRank <= 3.0) {
+                        score += 0.080;
+                    } else if (externalAvgRank <= 8.0) {
+                        score += 0.055;
+                    } else if (externalAvgRank <= 15.0) {
+                        score += 0.030;
+                    } else if (externalAvgRank <= 30.0) {
+                        score += 0.015;
+                    }
+
+                    // Taper the long tail of rookies more aggressively so premium
+                    // prospects remain strong, but later rookie names do not crowd
+                    // out proven veterans in the remaining-player board.
+                    if (externalAvgRank > 12.0 && externalAvgRank <= 20.0) {
+                        score -= (externalAvgRank - 12.0) * 0.010;
+                    } else if (externalAvgRank > 20.0 && externalAvgRank <= 35.0) {
+                        score -= 0.080 + ((externalAvgRank - 20.0) * 0.012);
+                    } else if (externalAvgRank > 35.0) {
+                        score -= 0.260 + Math.min((externalAvgRank - 35.0) * 0.006, 0.120);
+                    }
+
+                    if (hasAdp) {
+                        score += (adpNorm - 0.5) * 0.10;
+                    }
+                    score += hasNbaTeam ? 0.015 : -0.05;
+                    return score;
                 }
-                score += hasNbaTeam ? 0.02 : -0.06;
-                return score;
             }
 
             // Rookie with no external signal: keep low so unknown free agents
@@ -252,15 +315,77 @@ public class DynastyRankingService {
             return score;
         }
 
+        // Full all-player dynasty board (not draft-room mode):
+        // keep the model ADP-first with moderate age and signal adjustments.
+        if (!forDraftMode) {
+            double score = 0.0;
+
+            // Dynasty ADP is the strongest global market signal.
+            score += adpNorm * 0.84;
+
+            // External ranks are supportive but not dominant.
+            score += extNorm * 0.06;
+
+            // Production adds stability when available.
+            score += prodEff * 0.03;
+
+            // Slight premium for NBA role stability.
+            score += hasNbaTeam(p) ? 0.007 : -0.03;
+
+            // Age curve tuned for dynasty windows (general, not player-specific).
+            score += ageDynastyAdjustment(p != null ? p.getAge() : null);
+
+            // Elite ADP tiering to preserve foundational assets near the top.
+            if (hasAdp) {
+                if (searchRank <= 3) {
+                    score += 0.11;
+                } else if (searchRank <= 6) {
+                    score += 0.06;
+                } else if (searchRank <= 10) {
+                    score += 0.035;
+                } else if (searchRank <= 25) {
+                    score += 0.015;
+                } else if (searchRank <= 50) {
+                    score += 0.006;
+                }
+
+                // Keep the board close to dynasty startup market behavior:
+                // beyond the elite core, require stronger ADP alignment.
+                if (searchRank > 6 && searchRank <= 20) {
+                    score -= (searchRank - 6) * 0.003;
+                } else if (searchRank > 20) {
+                    score -= 0.042 + Math.min((searchRank - 20) * 0.001, 0.020);
+                }
+            }
+
+            return score;
+        }
+
         // Veterans: ADP is the market's dynasty valuation, so it BOTH anchors the score
         // AND gates how much we trust raw production. A big per-game line paired with a
-        // poor/absent ADP (small-sample flukes, end-of-bench players like Julian Reese)
-        // gets its production heavily discounted instead of riding to the top.
+        // poor/absent ADP (small-sample flukes, end-of-bench players) gets discounted.
         double adpAnchor = hasAdp ? adpNorm : 0.12;
         double adpConfidence = hasAdp ? clamp((300.0 - searchRank) / 300.0, 0.15, 1.0) : 0.25;
         double corroboratedProd = prodEff * adpConfidence;
 
         return (corroboratedProd * 0.62) + (adpAnchor * 0.32) + (extNorm * 0.06);
+    }
+
+    private double ageDynastyAdjustment(Integer age) {
+        if (age == null) {
+            return 0.0;
+        }
+
+        if (age <= 21) return 0.030;
+        if (age <= 23) return 0.024;
+        if (age <= 25) return 0.017;
+        if (age <= 27) return 0.010;
+        if (age <= 29) return 0.000;
+        if (age == 30) return -0.006;
+        if (age == 31) return -0.012;
+        if (age == 32) return -0.020;
+        if (age == 33) return -0.028;
+        return -0.036;
     }
 
     private double clamp(double value, double lo, double hi) {

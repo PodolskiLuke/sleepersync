@@ -2,6 +2,7 @@ package com.sleepersync.controller;
 
 import com.sleepersync.model.dto.DynastyRankingEntry;
 import com.sleepersync.model.dto.RemainingDraftRankingsResponse;
+import com.sleepersync.model.dto.AggregatedRankingEntry;
 import com.sleepersync.service.DynastyRankingService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -30,6 +31,16 @@ public class RankingsController {
     @GetMapping("/scrape")
     public ResponseEntity<List<DynastyRankingEntry>> scrapeConfiguredSources() {
         return ResponseEntity.ok(dynastyRankingService.scrapeConfiguredSources());
+    }
+
+    /**
+     * Return all players ranked by blended score.
+     * - Local Sleeper production/adp
+     * - External scraped next-season/dynasty rankings
+     */
+    @GetMapping("/all")
+    public ResponseEntity<List<AggregatedRankingEntry>> getAllRankings() {
+        return ResponseEntity.ok(dynastyRankingService.getAllRankings());
     }
 
     /**

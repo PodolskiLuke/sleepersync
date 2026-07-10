@@ -293,15 +293,12 @@ export default function DraftHelper() {
     : ['ALL', ...POSITIONS]
   const sleeperActiveList =
     activeTab === 'ALL' ? bestAvailable?.overall : bestAvailable?.byPosition?.[activeTab]
-  const dynastyActiveListRaw =
+  const dynastyActiveList =
     activeTab === 'ALL'
       ? dynastyRankings?.overall
       : activeTab === 'ROOKIES'
         ? (dynastyRankings?.rookies || dynastyRankings?.overall || []).filter((p) => p.rookie)
-        : dynastyRankings?.byPosition?.[activeTab]
-  const dynastyActiveList = activeTab === 'ALL' || activeTab === 'ROOKIES'
-    ? dynastyActiveListRaw
-    : (dynastyActiveListRaw || []).filter((p) => matchesPosition(p.position, activeTab))
+        : (dynastyRankings?.byPosition?.[activeTab] || []).filter((p) => matchesPosition(p.position, activeTab))
 
   const activeList = rankingMode === 'DYNASTY' ? dynastyActiveList : sleeperActiveList
 
@@ -320,9 +317,7 @@ export default function DraftHelper() {
       const bBlend = b.blendedScore ?? -999
       return bBlend - aBlend
     })
-    : [...(activeList || [])].sort(
-    (a, b) => rankingScore(b) - rankingScore(a)
-    )
+    : [...(activeList || [])].sort((a, b) => rankingScore(b) - rankingScore(a))
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
