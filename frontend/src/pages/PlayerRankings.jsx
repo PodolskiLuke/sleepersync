@@ -15,6 +15,15 @@ const matchesPosition = (playerPosition, wanted) => {
 
 const getDisplayPosition = (player) => player?.eligiblePositions || player?.position || ''
 
+const getPositionCountMap = (players) => {
+  const source = Array.isArray(players) ? players : []
+
+  return POSITIONS.reduce((counts, position) => {
+    counts[position] = source.filter((player) => matchesPosition(getDisplayPosition(player), position)).length
+    return counts
+  }, {})
+}
+
 export default function PlayerRankings() {
   const [rankings, setRankings] = useState([])
   const [loading, setLoading] = useState(true)
@@ -22,6 +31,7 @@ export default function PlayerRankings() {
   const [selectedPosition, setSelectedPosition] = useState('ALL')
   const [searchTerm, setSearchTerm] = useState('')
   const [sortBy, setSortBy] = useState('rank') // rank, name, position, fpts, adp
+  const positionCounts = getPositionCountMap(rankings)
 
   useEffect(() => {
     const fetchRankings = async () => {
@@ -81,6 +91,17 @@ export default function PlayerRankings() {
         <p className="text-sleeper-muted">
           Dynasty and redraft rankings updated with the latest performance data.
         </p>
+        <div className="mt-4 rounded-xl border border-sleeper-border bg-sleeper-border/20 p-4 text-sm text-sleeper-muted">
+          <div className="flex items-center gap-2 text-white font-medium mb-2">
+            <span aria-hidden="true">ℹ️</span>
+            <span>How rankings work</span>
+          </div>
+          <ul className="space-y-1.5">
+            <li><span className="text-white font-medium">Blended</span> combines Sleeper market value, recent production, and external rankings.</li>
+            <li><span className="text-white font-medium">ADP</span> is the Sleeper value rank/search rank. Lower is better.</li>
+            <li><span className="text-white font-medium">Rookies</span> use draft-consensus signals, but are intentionally tempered versus proven veterans on the full board.</li>
+          </ul>
+        </div>
       </div>
 
       {/* Controls */}
@@ -114,7 +135,7 @@ export default function PlayerRankings() {
                         : 'bg-sleeper-border text-sleeper-muted hover:text-white'
                     }`}
                   >
-                    {pos}
+                    {pos} ({pos === 'ALL' ? rankings.length : (positionCounts[pos] || 0)})
                   </button>
                 ))}
               </div>

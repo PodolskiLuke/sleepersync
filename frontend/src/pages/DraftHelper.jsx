@@ -242,6 +242,15 @@ const PositionBadge = ({ position }) => {
 
 const getDisplayPosition = (player) => player?.eligiblePositions || player?.position || ''
 
+const getPositionCountMap = (players) => {
+  const source = Array.isArray(players) ? players : []
+
+  return POSITIONS.reduce((counts, position) => {
+    counts[position] = source.filter((player) => matchesPosition(getDisplayPosition(player), position)).length
+    return counts
+  }, {})
+}
+
 export default function DraftHelper() {
   // Setup form state
   const [sleeperUsername, setSleeperUsername] = useState('')
@@ -493,6 +502,9 @@ export default function DraftHelper() {
     : ['ALL', ...POSITIONS]
   const sleeperOverall = bestAvailable?.overall || []
   const dynastyOverall = dynastyRankings?.overall || []
+  const sleeperPositionCounts = getPositionCountMap(sleeperOverall)
+  const dynastyPositionCounts = getPositionCountMap(dynastyOverall)
+  const rookieCount = (dynastyRankings?.rookies || dynastyOverall).filter((player) => player.rookie).length
 
   const sleeperActiveList =
     activeTab === 'ALL'
@@ -526,6 +538,20 @@ export default function DraftHelper() {
       return bBlend - aBlend
     })
     : [...(activeList || [])].sort((a, b) => rankingScore(b) - rankingScore(a))
+
+  const getTabCount = (tab) => {
+    if (tab === 'ALL') {
+      return rankingMode === 'DYNASTY' ? dynastyOverall.length : sleeperOverall.length
+    }
+
+    if (tab === 'ROOKIES') {
+      return rookieCount
+    }
+
+    return rankingMode === 'DYNASTY'
+      ? (dynastyPositionCounts[tab] || 0)
+      : (sleeperPositionCounts[tab] || 0)
+  }
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -742,11 +768,24 @@ export default function DraftHelper() {
                             : 'bg-sleeper-bg border border-sleeper-border text-sleeper-muted hover:text-white'
                         }`}
                       >
-                        {tab}
+                        {tab} ({getTabCount(tab)})
                       </button>
                     ))}
                   </div>
                 </div>
+              </div>
+
+              <div className="mb-4 rounded-xl border border-sleeper-border bg-sleeper-border/20 p-3 text-xs text-sleeper-muted">
+                <div className="flex items-center gap-2 text-white font-medium mb-1.5">
+                  <span aria-hidden="true">ℹ️</span>
+                  <span>How this board works</span>
+                </div>
+                <ul className="space-y-1">
+                  <li><span className="text-white font-medium">Sleeper</span> uses market rank and fantasy production for the best-available board.</li>
+                  <li><span className="text-white font-medium">Blended</span> in Dynasty mode mixes Sleeper value, production, and external rankings.</li>
+                  <li><span className="text-white font-medium">ADP Rank</span> is the Sleeper value/search rank. Lower is better.</li>
+                  <li><span className="text-white font-medium">Rookies</span> are ranked with draft-consensus input, but the full dynasty board still gives proven veterans meaningful weight.</li>
+                </ul>
               </div>
 
               {!rankedActiveList || rankedActiveList.length === 0 ? (

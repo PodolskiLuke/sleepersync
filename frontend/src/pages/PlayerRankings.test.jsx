@@ -75,6 +75,10 @@ describe('PlayerRankings page', () => {
     renderPlayerRankings()
     expect(screen.getByText('Player Rankings')).toBeInTheDocument()
     expect(screen.getByText(/Dynasty and redraft rankings/)).toBeInTheDocument()
+    expect(screen.getByText('How rankings work')).toBeInTheDocument()
+    expect(screen.getByText(/combines Sleeper market value, recent production, and external rankings/i)).toBeInTheDocument()
+    expect(screen.getByText(/Sleeper value rank\/search rank\. Lower is better/i)).toBeInTheDocument()
+    expect(screen.getByText(/intentionally tempered versus proven veterans on the full board/i)).toBeInTheDocument()
   })
 
   it('loads and displays player rankings', async () => {
@@ -84,6 +88,10 @@ describe('PlayerRankings page', () => {
     expect(await screen.findByText('Luka Doncic')).toBeInTheDocument()
     expect(screen.getByText('Jayson Tatum')).toBeInTheDocument()
     expect(screen.getByText('PF/SF/SG')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ALL (3)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PG (1)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'SF (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PF (1)' })).toBeInTheDocument()
   })
 
   it('filters by multi-position eligibility', async () => {
