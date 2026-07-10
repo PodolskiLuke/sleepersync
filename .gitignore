@@ -22,6 +22,8 @@ target/
 .env.*.local
 application-local.properties
 application-secrets.properties
+# Holds literal secret strings for git history scrubbing; never commit it.
+replacements.txt
 
 ### IDE ###
 .idea/

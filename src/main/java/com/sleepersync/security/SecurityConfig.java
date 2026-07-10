@@ -2,6 +2,7 @@ package com.sleepersync.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -39,9 +40,14 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .authorizeHttpRequests(auth -> auth
+                // Expensive write/sync operations must never be publicly callable.
+                // These trigger full external syncs and are a resource-abuse/DoS vector.
+                .requestMatchers(HttpMethod.POST, "/api/players/sync", "/api/players/sync-stats")
+                    .authenticated()
                 // Public endpoints - no token required
                 .requestMatchers(
-                    "/api/auth/**",
+                    "/api/auth/register",
+                    "/api/auth/login",
                     "/api/rankings/**",
                     "/api/drafts/**",
                     "/api/players/**"
