@@ -15,6 +15,7 @@ public class AggregatedRankingEntry {
     private String playerId;
     private String playerName;
     private String position;
+    private String eligiblePositions;
     private String team;
     private boolean rookie;
 

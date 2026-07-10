@@ -40,6 +40,21 @@ const MOCK_RANKINGS = [
     finalRank: 2,
     sourceRanks: [],
   },
+  {
+    playerId: '3',
+    playerName: 'Klay Thompson',
+    position: 'SF',
+    eligiblePositions: 'PF/SF/SG',
+    team: 'DAL',
+    rookie: false,
+    sleeperFantasyPtsAvg: 19.1,
+    sleeperSearchRank: 119,
+    externalAvgRank: 18.0,
+    externalRankCount: 2,
+    blendedScore: 0.71,
+    finalRank: 3,
+    sourceRanks: [],
+  },
 ]
 
 function renderPlayerRankings() {
@@ -68,6 +83,18 @@ describe('PlayerRankings page', () => {
 
     expect(await screen.findByText('Luka Doncic')).toBeInTheDocument()
     expect(screen.getByText('Jayson Tatum')).toBeInTheDocument()
+    expect(screen.getByText('PF/SF/SG')).toBeInTheDocument()
+  })
+
+  it('filters by multi-position eligibility', async () => {
+    rankingsApi.getAllRankings.mockResolvedValue({ data: MOCK_RANKINGS })
+    renderPlayerRankings()
+
+    expect(await screen.findByText('Klay Thompson')).toBeInTheDocument()
+    await screen.findByText('PF/SF/SG')
+    await screen.getByRole('button', { name: 'PF' }).click()
+
+    expect(screen.getByText('Klay Thompson')).toBeInTheDocument()
   })
 
   it('displays error message on API failure', async () => {

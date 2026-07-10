@@ -66,6 +66,9 @@ public class Player {
     @Column(name = "birth_date")
     private String birthDate;
 
+    @Transient
+    private String eligiblePositions;
+
     // -------------------------------------------------------------------------
     // Season stats (populated by POST /api/players/sync-stats)
     // Source: Sleeper /stats/nba/regular/{season}

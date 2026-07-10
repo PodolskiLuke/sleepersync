@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { draftApi, playersApi, rankingsApi } from '../api/axiosClient'
+import { draftApi, playersApi, rankingsApi, leaguesApi } from '../api/axiosClient'
 
 const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C']
 const STORAGE_KEY = 'draftHelperSession'
 const POLL_INTERVAL_MS = 5000
+const DEFAULT_LINEUP_SLOTS = ['PG', 'SG', 'SF', 'PF', 'C', 'UTIL', 'UTIL', 'UTIL']
 
 const getNum = (value, fallback) => {
   const n = Number(value)
@@ -76,6 +77,171 @@ const buildFallbackBestAvailable = (allPlayers, picks, limitPerPos = 15) => {
   }
 }
 
+const isBenchLikeSlot = (slot) => {
+  const normalized = String(slot || '').toUpperCase()
+  return normalized === 'BN' || normalized === 'BENCH' || normalized === 'TAXI'
+}
+
+const isReserveLikeSlot = (slot) => {
+  const normalized = String(slot || '').toUpperCase()
+  return normalized === 'IR' || normalized === 'IR+' || normalized === 'INJURED_RESERVE'
+}
+
+const hasUsablePosition = (playerPosition) =>
+  String(playerPosition || '').split(/[^A-Z]+/i).filter(Boolean).length > 0
+
+const canFillLineupSlot = (playerPosition, slot) => {
+  const normalizedSlot = String(slot || '').toUpperCase()
+
+  if (!hasUsablePosition(playerPosition)) return false
+
+  if (['PG', 'SG', 'SF', 'PF', 'C'].includes(normalizedSlot)) {
+    return matchesPosition(playerPosition, normalizedSlot)
+  }
+
+  if (normalizedSlot === 'G') {
+    return matchesPosition(playerPosition, 'PG') || matchesPosition(playerPosition, 'SG')
+  }
+
+  if (normalizedSlot === 'F') {
+    return matchesPosition(playerPosition, 'SF') || matchesPosition(playerPosition, 'PF')
+  }
+
+  if (normalizedSlot === 'G/F' || normalizedSlot === 'GF') {
+    return normalizedSlot === 'GF'
+      ? hasUsablePosition(playerPosition)
+      : matchesPosition(playerPosition, 'PG')
+        || matchesPosition(playerPosition, 'SG')
+        || matchesPosition(playerPosition, 'SF')
+        || matchesPosition(playerPosition, 'PF')
+  }
+
+  if (normalizedSlot === 'F/C' || normalizedSlot === 'FC') {
+    return matchesPosition(playerPosition, 'SF')
+      || matchesPosition(playerPosition, 'PF')
+      || matchesPosition(playerPosition, 'C')
+  }
+
+  if (normalizedSlot === 'UTIL' || normalizedSlot === 'UTL' || normalizedSlot === 'FLEX') {
+    return hasUsablePosition(playerPosition)
+  }
+
+  return hasUsablePosition(playerPosition)
+}
+
+const getEligibleStarterSlotCount = (playerPosition, starterSlots) =>
+  starterSlots.filter((slot) => canFillLineupSlot(playerPosition, slot)).length
+
+const getLineupSlotPriority = (slot) => {
+  const normalized = String(slot || '').toUpperCase()
+
+  switch (normalized) {
+    case 'PG':
+      return 1
+    case 'SG':
+      return 2
+    case 'SF':
+      return 3
+    case 'PF':
+      return 4
+    case 'C':
+      return 5
+    case 'G':
+      return 6
+    case 'F':
+      return 7
+    case 'G/F':
+    case 'GF':
+      return 8
+    case 'F/C':
+    case 'FC':
+      return 9
+    case 'UTIL':
+    case 'UTL':
+    case 'FLEX':
+      return 10
+    default:
+      return 11
+  }
+}
+
+const buildTeamLayout = (picks, rosterPositions) => {
+  const orderedPicks = [...(picks || [])].sort(
+    (a, b) => (a.pickNo ?? Number.MAX_SAFE_INTEGER) - (b.pickNo ?? Number.MAX_SAFE_INTEGER)
+  )
+
+  const sourceSlots = Array.isArray(rosterPositions) && rosterPositions.length > 0
+    ? rosterPositions
+    : DEFAULT_LINEUP_SLOTS
+
+  const starterSlots = sourceSlots
+    .filter((slot) => !isBenchLikeSlot(slot) && !isReserveLikeSlot(slot))
+    .map((slot, index) => ({ slot, index }))
+    .sort((a, b) => {
+      const priorityDiff = getLineupSlotPriority(a.slot) - getLineupSlotPriority(b.slot)
+      if (priorityDiff !== 0) return priorityDiff
+      return a.index - b.index
+    })
+    .map(({ slot }) => slot)
+
+  const assignedIndexes = new Set()
+  const starters = starterSlots.map((slot) => {
+    const eligible = orderedPicks
+      .map((player, index) => ({ player, index }))
+      .filter(({ player, index }) => {
+        return !assignedIndexes.has(index) && canFillLineupSlot(player.position, slot)
+      })
+      .sort((a, b) => {
+        const eligibleSlotsA = getEligibleStarterSlotCount(a.player.position, starterSlots)
+        const eligibleSlotsB = getEligibleStarterSlotCount(b.player.position, starterSlots)
+        if (eligibleSlotsA !== eligibleSlotsB) return eligibleSlotsA - eligibleSlotsB
+
+        return (a.player.pickNo ?? Number.MAX_SAFE_INTEGER) - (b.player.pickNo ?? Number.MAX_SAFE_INTEGER)
+      })
+
+    const selected = eligible[0]
+    if (selected) {
+      assignedIndexes.add(selected.index)
+    }
+
+    return {
+      slot,
+      player: selected?.player ?? null,
+    }
+  })
+
+  const bench = orderedPicks.filter((_, index) => !assignedIndexes.has(index))
+
+  return {
+    starters,
+    bench,
+    hasStructuredSlots: true,
+    usedFallbackSlots: !Array.isArray(rosterPositions) || rosterPositions.length === 0,
+  }
+}
+
+const getPositionBadgeTone = (position) => {
+  const normalized = String(position || '').toUpperCase()
+  if (matchesPosition(normalized, 'PG')) return 'text-sky-300 bg-sky-400/10 border-sky-400/30'
+  if (matchesPosition(normalized, 'SG')) return 'text-indigo-300 bg-indigo-400/10 border-indigo-400/30'
+  if (matchesPosition(normalized, 'SF')) return 'text-emerald-300 bg-emerald-400/10 border-emerald-400/30'
+  if (matchesPosition(normalized, 'PF')) return 'text-amber-300 bg-amber-400/10 border-amber-400/30'
+  if (matchesPosition(normalized, 'C')) return 'text-rose-300 bg-rose-400/10 border-rose-400/30'
+  return 'text-sleeper-muted bg-sleeper-border/40 border-sleeper-border'
+}
+
+const PositionBadge = ({ position }) => {
+  if (!position) return null
+
+  return (
+    <span className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${getPositionBadgeTone(position)}`}>
+      {position}
+    </span>
+  )
+}
+
+const getDisplayPosition = (player) => player?.eligiblePositions || player?.position || ''
+
 export default function DraftHelper() {
   // Setup form state
   const [sleeperUsername, setSleeperUsername] = useState('')
@@ -86,6 +252,7 @@ export default function DraftHelper() {
   // Active session + live board state
   const [session, setSession] = useState(null) // { userId, username, draftId }
   const [draft, setDraft] = useState(null)
+  const [league, setLeague] = useState(null)
   const [picks, setPicks] = useState([])
   const [myPicks, setMyPicks] = useState([])
   const [bestAvailable, setBestAvailable] = useState(null)
@@ -96,6 +263,7 @@ export default function DraftHelper() {
   const [initialLoading, setInitialLoading] = useState(false)
 
   const intervalRef = useRef(null)
+  const draftLeagueId = draft?.leagueId ?? draft?.league_id
 
   // Restore the last used username/draft ID so the form isn't empty on revisit
   useEffect(() => {
@@ -109,6 +277,31 @@ export default function DraftHelper() {
       // ignore malformed cache
     }
   }, [])
+
+  useEffect(() => {
+    if (!draftLeagueId) {
+      setLeague(null)
+      return undefined
+    }
+
+    let cancelled = false
+
+    leaguesApi.getLeague(draftLeagueId)
+      .then((res) => {
+        if (!cancelled) {
+          setLeague(res.data)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLeague(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [draftLeagueId])
 
   const refreshBoard = useCallback(async (currentDraftId, currentUserId) => {
     try {
@@ -206,6 +399,7 @@ export default function DraftHelper() {
     clearInterval(intervalRef.current)
     setSession(null)
     setDraft(null)
+    setLeague(null)
     setPicks([])
     setMyPicks([])
     setBestAvailable(null)
@@ -282,6 +476,12 @@ export default function DraftHelper() {
   const totalPicks = totalRounds && totalTeams ? totalRounds * totalTeams : null
   const picksMade = bestAvailable?.totalPicksMade ?? picks.length
   const currentPickNo = Math.min(picksMade + 1, totalPicks ?? picksMade + 1)
+  const myTeamLayout = buildTeamLayout(
+    myPicks,
+    league?.rosterPositions ?? league?.roster_positions ?? []
+  )
+  const filledStarterCount = myTeamLayout.starters.filter((slot) => slot.player).length
+  const totalStarterCount = myTeamLayout.starters.length
 
   const recentPicks = [...picks]
     .filter((p) => p.player_id)
@@ -291,14 +491,22 @@ export default function DraftHelper() {
   const tabs = rankingMode === 'DYNASTY'
     ? ['ALL', ...POSITIONS, 'ROOKIES']
     : ['ALL', ...POSITIONS]
+  const sleeperOverall = bestAvailable?.overall || []
+  const dynastyOverall = dynastyRankings?.overall || []
+
   const sleeperActiveList =
-    activeTab === 'ALL' ? bestAvailable?.overall : bestAvailable?.byPosition?.[activeTab]
+    activeTab === 'ALL'
+      ? sleeperOverall
+      : (bestAvailable?.byPosition?.[activeTab]?.length
+        ? bestAvailable.byPosition[activeTab]
+        : sleeperOverall.filter((player) => matchesPosition(player.position, activeTab)))
+
   const dynastyActiveList =
     activeTab === 'ALL'
-      ? dynastyRankings?.overall
+      ? dynastyOverall
       : activeTab === 'ROOKIES'
-        ? (dynastyRankings?.rookies || dynastyRankings?.overall || []).filter((p) => p.rookie)
-        : (dynastyRankings?.byPosition?.[activeTab] || []).filter((p) => matchesPosition(p.position, activeTab))
+        ? (dynastyRankings?.rookies || dynastyOverall).filter((player) => player.rookie)
+        : dynastyOverall.filter((player) => matchesPosition(player.position, activeTab))
 
   const activeList = rankingMode === 'DYNASTY' ? dynastyActiveList : sleeperActiveList
 
@@ -378,26 +586,91 @@ export default function DraftHelper() {
                 <p className="text-sm text-sleeper-muted">
                   No picks yet. They&apos;ll show up here as soon as it&apos;s your turn.
                 </p>
-              ) : (
-                <ul className="space-y-2">
-                  {myPicks.map((pick) => (
-                    <li
-                      key={pick.pickNo}
-                      className="flex items-center justify-between text-sm border-b border-sleeper-border pb-2 last:border-0 last:pb-0"
-                    >
+              ) : myTeamLayout.hasStructuredSlots ? (
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
                       <div>
-                        <p className="font-medium">{pick.fullName}</p>
-                        <p className="text-xs text-sleeper-muted">
-                          {pick.position || '—'} · {pick.team || 'FA'}
+                        <p className="text-[11px] uppercase tracking-wider text-sleeper-muted font-semibold">
+                          Starting Lineup
                         </p>
+                        {myTeamLayout.usedFallbackSlots && (
+                          <p className="text-[10px] text-sleeper-border mt-0.5">
+                            Estimated lineup layout
+                          </p>
+                        )}
                       </div>
-                      <span className="text-xs text-sleeper-muted shrink-0 ml-2">
-                        R{pick.round}.{String(pick.draftSlot).padStart(2, '0')}
+                      <span className="text-[11px] text-sleeper-muted">
+                        {filledStarterCount}/{totalStarterCount} filled
                       </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                    </div>
+                    <ul className="space-y-2">
+                      {myTeamLayout.starters.map(({ slot, player }, index) => (
+                        <li
+                          key={`${slot}-${index}`}
+                          className="flex items-start gap-2 rounded-lg border border-sleeper-border/60 bg-sleeper-bg/30 px-2 py-2"
+                        >
+                          <span className="shrink-0 min-w-10 text-center text-[11px] font-semibold bg-sleeper-border text-sleeper-accent rounded px-2 py-1">
+                            {slot}
+                          </span>
+                          {player ? (
+                            <div className="min-w-0 text-sm">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <p className="font-medium truncate">{player.fullName}</p>
+                                <PositionBadge position={player.position} />
+                              </div>
+                              <p className="text-xs text-sleeper-muted truncate">
+                                {player.team || 'FA'}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="min-w-0">
+                              <p className="text-sm text-sleeper-muted italic">Open slot</p>
+                              <p className="text-xs text-sleeper-border">Draft a player eligible for {slot}</p>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[11px] uppercase tracking-wider text-sleeper-muted font-semibold">
+                        Bench
+                      </p>
+                      <span className="text-[11px] text-sleeper-muted">
+                        {myTeamLayout.bench.length} player{myTeamLayout.bench.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    {myTeamLayout.bench.length === 0 ? (
+                      <p className="text-sm text-sleeper-muted">No bench players yet.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {myTeamLayout.bench.map((pick, index) => (
+                          <li
+                            key={pick.pickNo}
+                            className="flex items-start gap-2 rounded-lg border border-sleeper-border/60 bg-sleeper-bg/30 px-2 py-2"
+                          >
+                            <span className="shrink-0 min-w-10 text-center text-[11px] font-semibold bg-sleeper-border text-sleeper-muted rounded px-2 py-1">
+                              BN{index + 1}
+                            </span>
+                            <div className="min-w-0 text-sm">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <p className="font-medium truncate">{pick.fullName}</p>
+                                <PositionBadge position={pick.position} />
+                              </div>
+                              <p className="text-xs text-sleeper-muted truncate">
+                                {pick.team || 'FA'}
+                              </p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="card">
@@ -513,9 +786,10 @@ export default function DraftHelper() {
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-medium text-sm truncate">{cleanDynastyName(player.playerName || player.fullName)}</span>
+                                <PositionBadge position={getDisplayPosition(player)} />
                               </div>
                               <p className="text-xs text-sleeper-muted truncate">
-                                {player.position || '—'} · {player.team || 'FA'}
+                                {getDisplayPosition(player) || '—'} · {player.team || 'FA'}
                               </p>
                             </div>
 
@@ -566,6 +840,7 @@ export default function DraftHelper() {
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="font-medium text-sm truncate">{player.fullName}</span>
+                              <PositionBadge position={getDisplayPosition(player)} />
                               {player.injuryStatus && (
                                 <span className="text-xs text-sleeper-red font-semibold shrink-0">
                                   {player.injuryStatus}
@@ -573,7 +848,7 @@ export default function DraftHelper() {
                               )}
                             </div>
                             <p className="text-xs text-sleeper-muted">
-                              {player.position || '—'} · {player.team || 'FA'}
+                              {getDisplayPosition(player) || '—'} · {player.team || 'FA'}
                               {player.age ? ` · Age ${player.age}` : ''}
                             </p>
                           </div>

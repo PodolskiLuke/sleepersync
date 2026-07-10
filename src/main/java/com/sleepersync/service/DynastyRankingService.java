@@ -4,6 +4,7 @@ import com.sleepersync.model.dto.AggregatedRankingEntry;
 import com.sleepersync.model.dto.DraftPickDto;
 import com.sleepersync.model.dto.DynastyRankingEntry;
 import com.sleepersync.model.dto.RemainingDraftRankingsResponse;
+import com.sleepersync.model.dto.SleeperPlayerDto;
 import com.sleepersync.model.entity.Player;
 import com.sleepersync.repository.PlayerRepository;
 import org.springframework.stereotype.Service;
@@ -109,6 +110,7 @@ public class DynastyRankingService {
                 boolean forDraftMode
             ) {
             List<DynastyRankingEntry> external = rankingScraperService.scrapeAllConfigured();
+            Map<String, SleeperPlayerDto> sleeperPlayers = draftService.getSleeperPlayersSnapshot();
 
             Map<String, List<DynastyRankingEntry>> externalByName = external.stream()
                 .filter(e -> e.getPlayerName() != null && !e.getPlayerName().isBlank())
@@ -145,7 +147,8 @@ public class DynastyRankingService {
                 AggregatedRankingEntry entry = AggregatedRankingEntry.builder()
                     .playerId(p.getPlayerId())
                     .playerName(p.getFullName())
-                    .position(p.getPosition())
+                    .position(draftService.resolveBestPositionForPlayer(p, sleeperPlayers))
+                    .eligiblePositions(draftService.resolveBestPositionForPlayer(p, sleeperPlayers))
                     .team(p.getTeam())
                     .rookie(sleeperRookie)
                     .sleeperFantasyPtsAvg(p.getFantasyPtsAvg())

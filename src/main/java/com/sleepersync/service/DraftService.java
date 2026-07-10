@@ -15,7 +15,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -88,6 +87,10 @@ public class DraftService {
         return sleeperApiClient.getDraftPicks(draftId);
     }
 
+    Map<String, SleeperPlayerDto> getSleeperPlayersSnapshot() {
+        return getSleeperPlayersCached();
+    }
+
     // -------------------------------------------------------------------------
     // My picks
     // -------------------------------------------------------------------------
@@ -101,10 +104,26 @@ public class DraftService {
                 .toList();
     }
 
+    String resolveBestPositionForPlayer(Player player, Map<String, SleeperPlayerDto> sleeperPlayers) {
+        if (player == null) {
+            return null;
+        }
+
+        if (player.getPlayerId() == null || player.getPlayerId().isBlank()) {
+            return player.getPosition();
+        }
+
+        SleeperPlayerDto sleeperPlayer = sleeperPlayers != null ? sleeperPlayers.get(player.getPlayerId()) : null;
+        return resolveBestPosition(player, sleeperPlayer, player.getPosition());
+    }
+
     private DraftPickView toView(DraftPickDto pick) {
         Optional<Player> local = pick.getPlayerId() != null
                 ? playerRepository.findByPlayerId(pick.getPlayerId())
                 : Optional.empty();
+        SleeperPlayerDto sleeperPlayer = pick.getPlayerId() != null
+            ? getSleeperPlayersCached().get(pick.getPlayerId())
+            : null;
 
         Map<String, String> meta = pick.getMetadata() != null ? pick.getMetadata() : Map.of();
 
@@ -116,7 +135,7 @@ public class DraftService {
                     return name.isEmpty() ? "Unknown Player" : name;
                 });
 
-        String position = local.map(Player::getPosition).orElse(meta.get("position"));
+        String position = resolveBestPosition(local.orElse(null), sleeperPlayer, meta.get("position"));
         String team = local.map(Player::getTeam).orElse(meta.get("team"));
         String injuryStatus = local.map(Player::getInjuryStatus).orElse(null);
 
@@ -135,6 +154,37 @@ public class DraftService {
                 .build();
     }
 
+    private String resolveBestPosition(Player local, SleeperPlayerDto sleeperPlayer, String metadataPosition) {
+        if (sleeperPlayer != null) {
+            String fantasyPositions = joinFantasyPositions(sleeperPlayer.getFantasyPositions());
+            if (fantasyPositions != null && !fantasyPositions.isBlank()) {
+                return fantasyPositions;
+            }
+
+            if (sleeperPlayer.getPosition() != null && !sleeperPlayer.getPosition().isBlank()) {
+                return sleeperPlayer.getPosition();
+            }
+        }
+
+        if (local != null && local.getPosition() != null && !local.getPosition().isBlank()) {
+            return local.getPosition();
+        }
+
+        return metadataPosition;
+    }
+
+    private String joinFantasyPositions(String[] fantasyPositions) {
+        if (fantasyPositions == null || fantasyPositions.length == 0) {
+            return null;
+        }
+
+        return Arrays.stream(fantasyPositions)
+                .filter(pos -> pos != null && !pos.isBlank())
+                .map(String::trim)
+                .distinct()
+                .collect(Collectors.joining("/"));
+    }
+
     // -------------------------------------------------------------------------
     // Best available
     // -------------------------------------------------------------------------
@@ -145,14 +195,19 @@ public class DraftService {
                 .map(DraftPickDto::getPlayerId)
                 .filter(id -> id != null && !id.isBlank())
                 .collect(Collectors.toSet());
+        Map<String, SleeperPlayerDto> sleeperPlayers = getSleeperPlayersCached();
 
-        List<Player> overall = available.stream().limit(Math.max(limitPerPosition, 30)).toList();
+        List<Player> overall = available.stream()
+                .limit(Math.max(limitPerPosition, 30))
+                .map(p -> withResolvedPosition(p, sleeperPlayers))
+                .toList();
 
         Map<String, List<Player>> byPosition = new LinkedHashMap<>();
         for (String position : POSITION_ORDER) {
             List<Player> top = available.stream()
-                    .filter(p -> matchesPosition(p.getPosition(), position))
+                .filter(p -> matchesPosition(resolveBestPositionForPlayer(p, sleeperPlayers), position))
                     .limit(limitPerPosition)
+                    .map(p -> withResolvedPosition(p, sleeperPlayers))
                     .toList();
             byPosition.put(position, top);
         }
@@ -161,6 +216,46 @@ public class DraftService {
                 .overall(overall)
                 .byPosition(byPosition)
                 .totalPicksMade(pickedPlayerIds.size())
+                .build();
+    }
+
+    private Player withResolvedPosition(Player player, Map<String, SleeperPlayerDto> sleeperPlayers) {
+        if (player == null) {
+            return null;
+        }
+
+        String resolvedPosition = resolveBestPositionForPlayer(player, sleeperPlayers);
+        if (resolvedPosition == null || resolvedPosition.isBlank() || resolvedPosition.equals(player.getPosition())) {
+            return player;
+        }
+
+        return Player.builder()
+                .playerId(player.getPlayerId())
+                .firstName(player.getFirstName())
+                .lastName(player.getLastName())
+                .fullName(player.getFullName())
+                .position(resolvedPosition)
+            .eligiblePositions(resolvedPosition)
+                .team(player.getTeam())
+                .age(player.getAge())
+                .yearsExp(player.getYearsExp())
+                .status(player.getStatus())
+                .injuryStatus(player.getInjuryStatus())
+                .injuryNotes(player.getInjuryNotes())
+                .active(player.getActive())
+                .searchRank(player.getSearchRank())
+                .college(player.getCollege())
+                .birthDate(player.getBirthDate())
+                .gamesPlayed(player.getGamesPlayed())
+                .avgPts(player.getAvgPts())
+                .avgReb(player.getAvgReb())
+                .avgAst(player.getAvgAst())
+                .avgStl(player.getAvgStl())
+                .avgBlk(player.getAvgBlk())
+                .avgTo(player.getAvgTo())
+                .avgFg3m(player.getAvgFg3m())
+                .fantasyPtsAvg(player.getFantasyPtsAvg())
+                .lastSynced(player.getLastSynced())
                 .build();
     }
 
@@ -190,6 +285,7 @@ public class DraftService {
                 .map(DraftPickDto::getPlayerId)
                 .filter(id -> id != null && !id.isBlank())
                 .collect(Collectors.toSet());
+            Map<String, SleeperPlayerDto> sleeperPlayers = getSleeperPlayersCached();
 
             SourcePlayersResult source = getSourcePlayers();
             List<Player> available = source.players().stream()
@@ -211,7 +307,7 @@ public class DraftService {
             Map<String, Integer> byPosCounts = new HashMap<>();
             for (String position : POSITION_ORDER) {
                 int count = (int) available.stream()
-                    .filter(p -> matchesPosition(p.getPosition(), position))
+                    .filter(p -> matchesPosition(resolveBestPositionForPlayer(p, sleeperPlayers), position))
                     .limit(limitPerPosition)
                     .count();
                 byPosCounts.put(position, count);
@@ -242,7 +338,10 @@ public class DraftService {
         Map<String, SleeperPlayerDto> sleeperPlayers = getSleeperPlayersCached();
         if (sleeperPlayers == null || sleeperPlayers.isEmpty()) {
             if (!localPlayers.isEmpty()) {
-                return new SourcePlayersResult(localPlayers, false);
+                List<Player> enrichedLocal = localPlayers.stream()
+                        .map(p -> withResolvedPosition(p, sleeperPlayers))
+                        .toList();
+                return new SourcePlayersResult(enrichedLocal, false);
             }
             return new SourcePlayersResult(Collections.emptyList(), true);
         }
@@ -252,6 +351,7 @@ public class DraftService {
             List<Player> fallbackPlayers = sleeperPlayers.values().stream()
                     .filter(dto -> dto.getPlayerId() != null && !dto.getPlayerId().isBlank())
                     .map(this::toPlayer)
+                    .map(p -> withResolvedPosition(p, sleeperPlayers))
                     .toList();
             return new SourcePlayersResult(fallbackPlayers, true);
         }
@@ -273,7 +373,11 @@ public class DraftService {
             }
         }
 
-        return new SourcePlayersResult(new ArrayList<>(mergedById.values()), false);
+        List<Player> enrichedPlayers = mergedById.values().stream()
+                .map(p -> withResolvedPosition(p, sleeperPlayers))
+                .toList();
+
+        return new SourcePlayersResult(enrichedPlayers, false);
 
     }
 

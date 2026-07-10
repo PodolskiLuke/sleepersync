@@ -13,6 +13,8 @@ const matchesPosition = (playerPosition, wanted) => {
   return wanted === 'C' && tokens.includes('C')
 }
 
+const getDisplayPosition = (player) => player?.eligiblePositions || player?.position || ''
+
 export default function PlayerRankings() {
   const [rankings, setRankings] = useState([])
   const [loading, setLoading] = useState(true)
@@ -41,7 +43,8 @@ export default function PlayerRankings() {
 
   // Filter rankings
   let filtered = rankings.filter((player) => {
-    const matchesPos = selectedPosition === 'ALL' || matchesPosition(player.position, selectedPosition)
+    const displayPosition = getDisplayPosition(player)
+    const matchesPos = selectedPosition === 'ALL' || matchesPosition(displayPosition, selectedPosition)
     const matchesSearch = !searchTerm || 
       player.playerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       player.team?.toLowerCase().includes(searchTerm.toLowerCase())
@@ -56,7 +59,7 @@ export default function PlayerRankings() {
       case 'name':
         return (a.playerName || '').localeCompare(b.playerName || '')
       case 'position':
-        return (a.position || '').localeCompare(b.position || '')
+        return getDisplayPosition(a).localeCompare(getDisplayPosition(b))
       case 'fpts':
         return (b.sleeperFantasyPtsAvg || 0) - (a.sleeperFantasyPtsAvg || 0)
       case 'adp':
@@ -192,7 +195,7 @@ export default function PlayerRankings() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-sleeper-muted">
-                      {player.position || '-'}
+                      {getDisplayPosition(player) || '-'}
                     </td>
                     <td className="px-4 py-3 text-sm text-sleeper-muted">
                       {player.team || 'FA'}
